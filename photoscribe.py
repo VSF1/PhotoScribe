@@ -89,13 +89,14 @@ class PhotoItem:
 # ─────────────────────────────────────────────────────────
 
 class OllamaWorker(QThread):
-    """Processes photos through Ollama in a background thread."""
+    """Processes photos through a local AI backend (Ollama or LM Studio)."""
     progress = Signal(int, str)        # index, status
     result = Signal(int, object)       # index, PhotoMetadata or error string
     finished_all = Signal()
     log_message = Signal(str)
 
-    def __init__(self, photos, model, prompt, context, ollama_url, keywords_list=None):
+    def __init__(self, photos, model, prompt, context, ollama_url,
+                 keywords_list=None, backend="ollama"):
         super().__init__()
         self.photos = photos
         self.model = model
@@ -103,6 +104,7 @@ class OllamaWorker(QThread):
         self.context = context
         self.ollama_url = ollama_url
         self.keywords_list = keywords_list or []
+        self.backend = backend  # "ollama" or "openai"
         self._cancelled = False
 
     def cancel(self):
@@ -166,8 +168,62 @@ class OllamaWorker(QThread):
         )
         return "\n\n".join(parts)
 
+    def _call_ollama(self, img_b64, full_prompt):
+        """Ollama /api/chat format."""
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": full_prompt,
+                    "images": [img_b64],
+                }
+            ],
+            "stream": False,
+            "options": {
+                "temperature": 0.3,
+                "num_predict": 1024,
+            },
+            "think": False,
+        }
+        resp = requests.post(
+            f"{self.ollama_url}/api/chat",
+            json=payload,
+            timeout=180
+        )
+        resp.raise_for_status()
+        return resp.json().get("message", {}).get("content", "")
+
+    def _call_openai(self, img_b64, full_prompt):
+        """LM Studio / OpenAI-compatible chat format with vision."""
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": full_prompt},
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:image/jpeg;base64,{img_b64}"
+                        }},
+                    ],
+                }
+            ],
+            "temperature": 0.3,
+            "max_tokens": 1024,
+            "stream": False,
+        }
+        resp = requests.post(
+            f"{self.ollama_url}/v1/chat/completions",
+            json=payload,
+            timeout=180
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
     def run(self):
         full_prompt = self._build_prompt()
+        call_fn = self._call_openai if self.backend == "openai" else self._call_ollama
 
         for i, photo in enumerate(self.photos):
             if self._cancelled:
@@ -177,36 +233,12 @@ class OllamaWorker(QThread):
 
             self.progress.emit(i, "processing")
             self.log_message.emit(f"Processing: {photo.filename}")
+            response_text = ""
 
             try:
                 img_b64 = self._encode_image(photo.filepath)
-
-                payload = {
-                    "model": self.model,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": full_prompt,
-                            "images": [img_b64],
-                        }
-                    ],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.3,
-                        "num_predict": 1024,
-                    },
-                    "think": False,
-                }
-
                 self.log_message.emit(f"Sending to {self.model}...")
-                resp = requests.post(
-                    f"{self.ollama_url}/api/chat",
-                    json=payload,
-                    timeout=180
-                )
-                resp.raise_for_status()
-                resp_json = resp.json()
-                response_text = resp_json.get("message", {}).get("content", "")
+                response_text = call_fn(img_b64, full_prompt)
                 self.log_message.emit(f"Response received ({len(response_text)} chars)")
 
                 # Parse JSON from response (handle markdown fences)
@@ -216,7 +248,7 @@ class OllamaWorker(QThread):
                     lines = [l for l in lines if not l.strip().startswith("```")]
                     cleaned = "\n".join(lines).strip()
 
-                # Try to find JSON object in response
+                # Find the JSON object in the response
                 start = cleaned.find("{")
                 end = cleaned.rfind("}") + 1
                 if start >= 0 and end > start:
@@ -235,8 +267,8 @@ class OllamaWorker(QThread):
                 self.log_message.emit(f"JSON parse error: {e}\nRaw: {response_text[:300]}")
                 self.result.emit(i, f"Failed to parse model response: {e}")
             except requests.exceptions.ConnectionError:
-                self.log_message.emit("Connection failed. Is Ollama running?")
-                self.result.emit(i, "Cannot connect to Ollama. Is it running? (ollama serve)")
+                self.log_message.emit("Connection failed — is your AI backend running?")
+                self.result.emit(i, "Cannot connect to AI backend. Check the URL and that it's running.")
             except Exception as e:
                 self.log_message.emit(f"Error: {e}")
                 self.result.emit(i, str(e))
@@ -251,17 +283,36 @@ class OllamaWorker(QThread):
 class MetadataWriter:
     """Writes IPTC and XMP metadata using exiftool."""
 
+    # Common install locations on macOS (PATH is restricted inside .app bundles)
+    _EXIFTOOL_PATHS = [
+        "/usr/local/bin/exiftool",      # ExifTool official .pkg installer
+        "/opt/homebrew/bin/exiftool",   # Homebrew (Apple Silicon)
+        "/usr/local/opt/exiftool/bin/exiftool",  # old Homebrew Intel
+        "/opt/local/bin/exiftool",      # MacPorts
+    ]
+
+    @staticmethod
+    def find_exiftool():
+        """Return the path to exiftool, or None if not found."""
+        found = shutil.which("exiftool")
+        if found:
+            return found
+        for path in MetadataWriter._EXIFTOOL_PATHS:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+        return None
+
     @staticmethod
     def check_exiftool():
-        """Check if exiftool is available."""
-        return shutil.which("exiftool") is not None
+        return MetadataWriter.find_exiftool() is not None
 
     @staticmethod
     def read_existing_metadata(filepath):
         """Read existing title, caption, keywords from file."""
         try:
+            exiftool = MetadataWriter.find_exiftool() or "exiftool"
             result = subprocess.run(
-                ["exiftool", "-j", "-IPTC:ObjectName",
+                [exiftool, "-j", "-IPTC:ObjectName",
                  "-IPTC:Caption-Abstract", "-IPTC:Keywords", filepath],
                 capture_output=True, text=True, timeout=15
             )
@@ -283,7 +334,8 @@ class MetadataWriter:
     def write_metadata(filepath, metadata: PhotoMetadata, backup=True,
                        append_keywords=False, skip_existing=False):
         """Write title, caption, keywords to file via exiftool."""
-        args = ["exiftool"]
+        exiftool = MetadataWriter.find_exiftool() or "exiftool"
+        args = [exiftool]
 
         if not backup:
             args.append("-overwrite_original")
@@ -318,7 +370,7 @@ class MetadataWriter:
                 args.append(f"-XMP:Subject+={kw}")
         else:
             # Two-pass: clear all keywords first, then write new ones
-            clear_args = ["exiftool"]
+            clear_args = [exiftool]
             if not backup:
                 clear_args.append("-overwrite_original")
             clear_args.extend([
@@ -738,16 +790,31 @@ class PhotoScribe(QMainWindow):
         self._init_ui()
         self._load_settings()
         self._check_dependencies()
+        QTimer.singleShot(500, self._refresh_models)
 
     def _check_dependencies(self):
         if not MetadataWriter.check_exiftool():
-            self.log("⚠ exiftool not found! Install it:")
-            self.log("  macOS: brew install exiftool")
-            self.log("  Linux: sudo apt install libimage-exiftool-perl")
-            self.log("  Windows: https://exiftool.org")
+            self.log("⚠ ExifTool not found — writing metadata will not work.")
+            QTimer.singleShot(200, self._show_exiftool_missing_dialog)
         if not HAS_RAWPY:
             self.log("⚠ rawpy not installed. RAW file support disabled.")
-            self.log("  Install with: pip install rawpy")
+
+    def _show_exiftool_missing_dialog(self):
+        import webbrowser
+        msg = QMessageBox(self)
+        msg.setWindowTitle("ExifTool Required")
+        msg.setIcon(QMessageBox.Warning)
+        msg.setText("ExifTool is not installed.")
+        msg.setInformativeText(
+            "ExifTool is needed to write metadata to your photo files.\n\n"
+            "Click 'Download Installer' to get the official macOS package "
+            "(no Terminal required). After installing, restart PhotoScribe."
+        )
+        install_btn = msg.addButton("Download Installer", QMessageBox.AcceptRole)
+        msg.addButton("Later", QMessageBox.RejectRole)
+        msg.exec()
+        if msg.clickedButton() == install_btn:
+            webbrowser.open("https://exiftool.org/install.html")
 
     def _init_ui(self):
         central = QWidget()
@@ -847,8 +914,21 @@ class PhotoScribe(QMainWindow):
 
         # ── Settings Tab ──
         settings_tab = QWidget()
-        settings_layout = QVBoxLayout(settings_tab)
+        settings_tab_layout = QVBoxLayout(settings_tab)
+        settings_tab_layout.setContentsMargins(0, 0, 0, 0)
+        settings_tab_layout.setSpacing(0)
+
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.NoFrame)
+        settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        settings_tab_layout.addWidget(settings_scroll)
+
+        settings_inner = QWidget()
+        settings_scroll.setWidget(settings_inner)
+        settings_layout = QVBoxLayout(settings_inner)
         settings_layout.setSpacing(8)
+        settings_layout.setContentsMargins(0, 0, 6, 0)
 
         # Model selection
         model_group = QGroupBox("Model")
@@ -864,8 +944,12 @@ class PhotoScribe(QMainWindow):
 
         # Ollama URL
         model_layout.addWidget(QLabel("URL:"))
-        self.ollama_url = QLineEdit("http://localhost:11434")
-        self.ollama_url.setFixedWidth(200)
+        self.ollama_url = QLineEdit("http://localhost:1234")
+        self.ollama_url.setFixedWidth(220)
+        self.ollama_url.setToolTip(
+            "LM Studio: http://localhost:1234 (default)\n"
+            "Ollama: http://localhost:11434"
+        )
         model_layout.addWidget(self.ollama_url)
         settings_layout.addWidget(model_group)
 
@@ -1222,7 +1306,10 @@ class PhotoScribe(QMainWindow):
     # ── Settings persistence ──
 
     def _load_settings(self):
-        url = self.settings.value("ollama_url", "http://localhost:11434")
+        url = self.settings.value("ollama_url", "http://localhost:1234")
+        # Migrate anyone who accidentally saved the wrong default
+        if not url:
+            url = "http://localhost:11434"
         self.ollama_url.setText(url)
         prompt = self.settings.value("prompt", "")
         if prompt:
@@ -1273,33 +1360,88 @@ class PhotoScribe(QMainWindow):
 
     def _refresh_models(self):
         url = self.ollama_url.text().rstrip("/")
-        try:
-            resp = requests.get(f"{url}/api/tags", timeout=5)
-            resp.raise_for_status()
-            models = resp.json().get("models", [])
-            self.model_combo.clear()
+        self.backend = "ollama"  # default; overridden below if OpenAI API detected
 
-            # Sort: prefer gemma3 models first
+        model_names = []
+        backend_label = ""
+        connected_url = url
+
+        # Known fallback URLs to probe if the configured URL fails
+        FALLBACK_URLS = ["http://localhost:1234", "http://localhost:11434"]
+
+        def _probe(probe_url):
+            """Try Ollama then OpenAI-compatible API at probe_url.
+            Returns (model_names, backend, label) or ([], None, '')."""
+            # Ollama
+            try:
+                resp = requests.get(f"{probe_url}/api/tags", timeout=3)
+                resp.raise_for_status()
+                names = [m["name"] for m in resp.json().get("models", [])]
+                if names:
+                    return names, "ollama", "Ollama"
+            except Exception:
+                pass
+            # OpenAI-compatible (LM Studio, Jan, etc.)
+            try:
+                resp = requests.get(f"{probe_url}/v1/models", timeout=3)
+                resp.raise_for_status()
+                SKIP = ("embed", "rerank", "whisper", "tts", "dall-e")
+                names = [
+                    m["id"] for m in resp.json().get("data", [])
+                    if isinstance(m, dict)
+                    and not any(s in m["id"].lower() for s in SKIP)
+                ]
+                if names:
+                    return names, "openai", "LM Studio"
+            except Exception:
+                pass
+            return [], None, ""
+
+        # Try configured URL first
+        model_names, backend, backend_label = _probe(url)
+
+        # If that failed, silently try known fallback URLs
+        if not model_names:
+            for fallback in FALLBACK_URLS:
+                if fallback.rstrip("/") == url:
+                    continue
+                model_names, backend, backend_label = _probe(fallback)
+                if model_names:
+                    connected_url = fallback
+                    self.ollama_url.setText(fallback)
+                    break
+
+        if backend:
+            self.backend = backend
+
+        if model_names:
+            # Sort: prefer gemma models first, then alphabetical
             model_names = sorted(
-                [m["name"] for m in models],
-                key=lambda n: (0 if "gemma3" in n.lower() else 1, n)
+                model_names,
+                key=lambda n: (0 if "gemma" in n.lower() else 1, n)
             )
+            self.model_combo.clear()
             self.model_combo.addItems(model_names)
 
-            # Default to gemma3:12b if available
+            # Default to gemma3:12b or first model
             for i, name in enumerate(model_names):
-                if "gemma3:12b" in name:
+                if "gemma3:12b" in name or "gemma-3-12b" in name.lower():
                     self.model_combo.setCurrentIndex(i)
                     break
 
-            self.ollama_status.setText(f"● Ollama connected ({len(models)} models)")
+            self.ollama_status.setText(
+                f"● {backend_label} connected ({len(model_names)} models)"
+            )
             self.ollama_status.setStyleSheet("color: #27ae60; font-size: 12px;")
-            self.log(f"Connected to Ollama at {url} ({len(models)} models)")
-
-        except Exception as e:
-            self.ollama_status.setText("● Ollama not connected")
+            self.log(f"Connected to {backend_label} at {connected_url} ({len(model_names)} models)")
+        else:
+            self.ollama_status.setText("● Not connected")
             self.ollama_status.setStyleSheet("color: #c0392b; font-size: 12px;")
-            self.log(f"Cannot connect to Ollama: {e}")
+            self.log(
+                f"Cannot connect at {url}\n"
+                "  Ollama default:   http://localhost:11434\n"
+                "  LM Studio default: http://localhost:1234"
+            )
             self.model_combo.clear()
 
     # ── File handling ──
@@ -1455,7 +1597,7 @@ class PhotoScribe(QMainWindow):
             self.status_label.setText("No photos loaded")
             return
         if not self.model_combo.currentText():
-            self.status_label.setText("No model selected. Is Ollama running?")
+            self.status_label.setText("No model selected — click Refresh to connect")
             return
 
         pending = [p for p in self.photos if p.status != "done"]
@@ -1478,6 +1620,7 @@ class PhotoScribe(QMainWindow):
             context=self._get_context_string(),
             ollama_url=self.ollama_url.text().rstrip("/"),
             keywords_list=self._get_keywords_list(),
+            backend=getattr(self, "backend", "ollama"),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.result.connect(self._on_result)
@@ -1621,13 +1764,7 @@ class PhotoScribe(QMainWindow):
 
     def _write_metadata(self):
         if not MetadataWriter.check_exiftool():
-            QMessageBox.critical(
-                self, "Error",
-                "exiftool is not installed.\n\n"
-                "macOS: brew install exiftool\n"
-                "Linux: sudo apt install libimage-exiftool-perl\n"
-                "Windows: https://exiftool.org"
-            )
+            self._show_exiftool_missing_dialog()
             return
 
         completed = [p for p in self.photos if p.status == "done" and p.metadata]
