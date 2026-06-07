@@ -284,20 +284,38 @@ class MetadataWriter:
     """Writes IPTC and XMP metadata using exiftool."""
 
     # Common install locations on macOS (PATH is restricted inside .app bundles)
-    _EXIFTOOL_PATHS = [
+    _EXIFTOOL_PATHS_MAC = [
         "/usr/local/bin/exiftool",      # ExifTool official .pkg installer
         "/opt/homebrew/bin/exiftool",   # Homebrew (Apple Silicon)
         "/usr/local/opt/exiftool/bin/exiftool",  # old Homebrew Intel
         "/opt/local/bin/exiftool",      # MacPorts
     ]
 
+    # Common install locations on Windows
+    _EXIFTOOL_PATHS_WIN = [
+        r"C:\Windows\exiftool.exe",
+        r"C:\Program Files\ExifTool\exiftool.exe",
+        r"C:\Program Files (x86)\ExifTool\exiftool.exe",
+    ]
+
     @staticmethod
     def find_exiftool():
         """Return the path to exiftool, or None if not found."""
+        # Check next to the bundled executable first (PyInstaller _MEIPASS)
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass:
+            exe = "exiftool.exe" if sys.platform == "win32" else "exiftool"
+            bundled = os.path.join(meipass, exe)
+            if os.path.isfile(bundled):
+                return bundled
+
         found = shutil.which("exiftool")
         if found:
             return found
-        for path in MetadataWriter._EXIFTOOL_PATHS:
+
+        paths = (MetadataWriter._EXIFTOOL_PATHS_WIN if sys.platform == "win32"
+                 else MetadataWriter._EXIFTOOL_PATHS_MAC)
+        for path in paths:
             if os.path.isfile(path) and os.access(path, os.X_OK):
                 return path
         return None
@@ -801,14 +819,18 @@ class PhotoScribe(QMainWindow):
 
     def _show_exiftool_missing_dialog(self):
         import webbrowser
+        is_win = sys.platform == "win32"
         msg = QMessageBox(self)
         msg.setWindowTitle("ExifTool Required")
         msg.setIcon(QMessageBox.Warning)
         msg.setText("ExifTool is not installed.")
         msg.setInformativeText(
             "ExifTool is needed to write metadata to your photo files.\n\n"
-            "Click 'Download Installer' to get the official macOS package "
-            "(no Terminal required). After installing, restart PhotoScribe."
+            + ("Click 'Download Installer' to get the official Windows installer. "
+               "After installing, restart PhotoScribe."
+               if is_win else
+               "Click 'Download Installer' to get the official macOS package "
+               "(no Terminal required). After installing, restart PhotoScribe.")
         )
         install_btn = msg.addButton("Download Installer", QMessageBox.AcceptRole)
         msg.addButton("Later", QMessageBox.RejectRole)
