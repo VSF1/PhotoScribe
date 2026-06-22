@@ -1,9 +1,10 @@
 name: Build Windows Installer
 
 on:
-  push:
-    tags:
-      - 'v*'
+  # Manual-trigger only for now — the Windows build is a work in progress
+  # (ExifTool download + bundling needs fixing). Re-enable the tag trigger
+  # once it produces a working installer.
+  workflow_dispatch:
 
 jobs:
   build-windows:
