@@ -27,14 +27,7 @@ jobs:
 
       - name: Download ExifTool for Windows
         shell: pwsh
-        run: |
-          $url = "https://exiftool.org/exiftool-13.10_64.zip"
-          Invoke-WebRequest -Uri $url -OutFile exiftool.zip
-          Expand-Archive -Path exiftool.zip -DestinationPath exiftool_tmp
-          # ExifTool ships as "exiftool(-k).exe" — rename to exiftool.exe
-          $exe = Get-ChildItem -Path exiftool_tmp -Filter "*.exe" | Select-Object -First 1
-          Copy-Item $exe.FullName -Destination exiftool.exe
-          Remove-Item -Recurse exiftool_tmp, exiftool.zip
+        run: ./fetch-exiftool.ps1
 
       - name: Generate .ico from logo.png
         run: |

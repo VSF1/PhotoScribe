@@ -6,6 +6,9 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 rawpy_datas, rawpy_binaries, rawpy_hiddenimports = collect_all('rawpy')
 
+# pillow_heif bundles a native libheif — collect it so HEIC/HEIF works
+heif_datas, heif_binaries, heif_hiddenimports = collect_all('pillow_heif')
+
 pyside6_datas = collect_data_files('PySide6', includes=[
     'Qt/plugins/platforms/*',
     'Qt/plugins/imageformats/*',
@@ -15,13 +18,15 @@ pyside6_datas = collect_data_files('PySide6', includes=[
 a = Analysis(
     ['photoscribe.py'],
     pathex=[],
-    binaries=rawpy_binaries,
-    datas=pyside6_datas + rawpy_datas + [
+    binaries=rawpy_binaries + heif_binaries,
+    datas=pyside6_datas + rawpy_datas + heif_datas + [
         ('logo.png', '.'),
-        ('exiftool.exe', '.'),   # bundled ExifTool binary
+        ('exiftool.exe', '.'),                  # ExifTool launcher
+        ('exiftool_files', 'exiftool_files'),   # Perl runtime it needs
     ],
     hiddenimports=(
         rawpy_hiddenimports
+        + heif_hiddenimports
         + [
             'PySide6.QtCore',
             'PySide6.QtGui',
@@ -31,6 +36,7 @@ a = Analysis(
             'PIL.TiffImagePlugin',
             'PIL.PngImagePlugin',
             'PIL.WebPImagePlugin',
+            'pillow_heif',
         ]
     ),
     hookspath=[],

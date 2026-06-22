@@ -20,5 +20,9 @@ build/
 # ExifTool backup files
 *_original
 
+# Bundled ExifTool, downloaded at build time by fetch-exiftool.ps1
+/exiftool.exe
+/exiftool_files/
+
 # App settings (user-specific)
 *.ini
