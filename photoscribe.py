@@ -19,6 +19,7 @@ from pathlib import Path
 from io import BytesIO
 from dataclasses import dataclass, field
 from typing import Optional
+from datetime import datetime as _datetime
 
 import requests
 from PIL import Image
@@ -74,6 +75,207 @@ RAW_EXTENSIONS = {
 }
 
 # ─────────────────────────────────────────────────────────
+# Folder context detection
+# ─────────────────────────────────────────────────────────
+
+# Patterns for folder name date detection
+_FOLDER_DATE_PATTERNS = [
+    re.compile(r"^(\d{4})(\d{2})(\d{2})\s*[-–—]\s*(.+)$"),
+    re.compile(r"^(\d{4})[-.](\d{2})[-.](\d{2})\s*[-–—]\s*(.+)$"),
+    re.compile(r"^(\d{4})(\d{2})(\d{2})\s+(.+)$"),
+    re.compile(r"^(\d{4})[-.](\d{2})[-.](\d{2})\s+(.+)$"),
+]
+
+@dataclass
+class FolderContext:
+    date_str: str = ""
+    location: str = ""
+    raw_folder: str = ""
+    subfolder: str = ""
+
+def parse_folder_name(folder_name: str) -> Optional[tuple]:
+    """Try all patterns, return (date_str, description) or None."""
+    name = folder_name.strip()
+    for pattern in _FOLDER_DATE_PATTERNS:
+        m = pattern.match(name)
+        if m:
+            year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            description = m.group(4).strip()
+            try:
+                dt = _datetime(year, month, day)
+                date_str = dt.strftime("%-d %B %Y") if sys.platform != "win32" else dt.strftime("%#d %B %Y")
+            except ValueError:
+                continue
+            return date_str, description
+    return None
+
+def detect_folder_context(filepath: str, max_levels: int = 5) -> Optional[FolderContext]:
+    """Walk up directory tree looking for matching folder."""
+    path = Path(filepath).resolve()
+    current = path.parent
+    subfolder_parts = []
+    for _ in range(max_levels):
+        folder_name = current.name
+        if not folder_name:
+            break
+        result = parse_folder_name(folder_name)
+        if result:
+            date_str, description = result
+            subfolder = " / ".join(reversed(subfolder_parts)) if subfolder_parts else ""
+            return FolderContext(date_str=date_str, location=description, raw_folder=folder_name, subfolder=subfolder)
+        else:
+            subfolder_parts.append(folder_name)
+        current = current.parent
+    return None
+
+def detect_batch_folder_context(filepaths: list) -> Optional[FolderContext]:
+    """Return most common context from a batch of files."""
+    contexts = {}
+    for fp in filepaths:
+        ctx = detect_folder_context(fp)
+        if ctx:
+            key = (ctx.date_str, ctx.location)
+            if key not in contexts:
+                contexts[key] = (ctx, 0)
+            contexts[key] = (contexts[key][0], contexts[key][1] + 1)
+    if not contexts:
+        return None
+    best = max(contexts.values(), key=lambda x: x[1])
+    return best[0]
+
+# ─────────────────────────────────────────────────────────
+# Keyword deduplication
+# ─────────────────────────────────────────────────────────
+
+def deduplicate_keywords(keywords: list) -> list:
+    """Remove near-duplicate keywords (plurals, case variants).
+    Keeps the first occurrence of each unique concept.
+    """
+    if not keywords:
+        return keywords
+
+    def normalise(kw):
+        kw = kw.lower().strip()
+        if kw.endswith("ies") and len(kw) > 4:
+            kw = kw[:-3] + "y"
+        elif kw.endswith("es") and len(kw) > 3 and (
+            kw.endswith("ches") or kw.endswith("shes") or
+            kw.endswith("ses") or kw.endswith("xes") or
+            kw.endswith("zes") or kw.endswith("oes")
+        ):
+            kw = kw[:-2]
+        elif kw.endswith("s") and not kw.endswith("ss") and len(kw) > 3:
+            kw = kw[:-1]
+        return kw
+
+    seen_normalised = {}
+    result = []
+    for kw in keywords:
+        norm = normalise(kw)
+        if norm not in seen_normalised:
+            seen_normalised[norm] = kw
+            result.append(kw)
+    return result
+
+# ─────────────────────────────────────────────────────────
+# EXIF date reading
+# ─────────────────────────────────────────────────────────
+
+def read_exif_date(filepath: str) -> Optional[str]:
+    """Read DateTimeOriginal from EXIF and return as human-readable string."""
+    exiftool = MetadataWriter.find_exiftool()
+    if not exiftool:
+        return None
+    try:
+        result = subprocess.run(
+            [exiftool, "-j", "-DateTimeOriginal", filepath],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if data:
+                dto = data[0].get("DateTimeOriginal", "")
+                if dto and ":" in dto:
+                    date_part = dto.split(" ")[0]
+                    parts = date_part.split(":")
+                    if len(parts) == 3:
+                        dt = _datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+                        if sys.platform == "win32":
+                            return dt.strftime("%#d %B %Y")
+                        else:
+                            return dt.strftime("%-d %B %Y")
+    except Exception:
+        pass
+    return None
+
+# ─────────────────────────────────────────────────────────
+# GPS reverse-geocoding
+# ─────────────────────────────────────────────────────────
+
+def read_gps_coordinates(filepath: str) -> Optional[tuple]:
+    """Read GPS coordinates from photo EXIF data.
+    Returns (latitude, longitude) as floats, or None.
+    """
+    exiftool = MetadataWriter.find_exiftool()
+    if not exiftool:
+        return None
+    try:
+        result = subprocess.run(
+            [exiftool, "-j", "-n", "-GPSLatitude", "-GPSLongitude", filepath],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if data:
+                lat = data[0].get("GPSLatitude")
+                lon = data[0].get("GPSLongitude")
+                if lat is not None and lon is not None:
+                    return (float(lat), float(lon))
+    except Exception:
+        pass
+    return None
+
+
+def reverse_geocode(lat: float, lon: float) -> Optional[str]:
+    """Reverse geocode via OpenStreetMap Nominatim (free, no API key).
+    NOTE: This makes an external network request.
+    Returns place description or None.
+    """
+    try:
+        url = (
+            f"https://nominatim.openstreetmap.org/reverse"
+            f"?lat={lat}&lon={lon}&format=json&zoom=14"
+            f"&addressdetails=1&accept-language=en"
+        )
+        resp = requests.get(url, timeout=10, headers={
+            "User-Agent": "PhotoScribe/1.0 (photo metadata tool)"
+        })
+        resp.raise_for_status()
+        data = resp.json()
+        addr = data.get("address", {})
+        parts = []
+        for key in ["tourism", "natural", "leisure", "amenity",
+                    "hamlet", "village", "suburb", "town", "city"]:
+            if key in addr:
+                parts.append(addr[key])
+                break
+        for key in ["county", "state_district", "state"]:
+            if key in addr and addr[key] not in parts:
+                parts.append(addr[key])
+                break
+        country = addr.get("country", "")
+        if country and country not in parts:
+            parts.append(country)
+        if parts:
+            return ", ".join(parts)
+        display = data.get("display_name", "")
+        if display:
+            return ", ".join(display.split(", ")[:3])
+    except Exception:
+        pass
+    return None
+
+# ─────────────────────────────────────────────────────────
 # Data structures
 # ─────────────────────────────────────────────────────────
 
@@ -105,7 +307,8 @@ class OllamaWorker(QThread):
     log_message = Signal(str)
 
     def __init__(self, photos, model, prompt, context, ollama_url,
-                 keywords_list=None, backend="ollama", max_tokens=2048):
+                 keywords_list=None, backend="ollama", max_tokens=2048,
+                 describe_people=True):
         super().__init__()
         self.photos = photos
         self.model = model
@@ -115,6 +318,7 @@ class OllamaWorker(QThread):
         self.keywords_list = keywords_list or []
         self.backend = backend  # "ollama" or "openai"
         self.max_tokens = max_tokens
+        self.describe_people = describe_people
         self._cancelled = False
 
     def cancel(self):
@@ -179,6 +383,15 @@ class OllamaWorker(QThread):
             parts.append(f"Context for this photo: {self.context.strip()}")
 
         parts.append(self.prompt.strip())
+
+        if self.describe_people:
+            parts.append(
+                "If people are visible in the photo, describe their positions, "
+                "roles, and actions (e.g. 'bride and groom exchanging rings', "
+                "'group of hikers on a trail', 'child playing in the sand'). "
+                "Do not attempt to identify individuals by name. Include "
+                "people-related terms in the keywords where relevant."
+            )
 
         if self.keywords_list:
             vocab = ", ".join(self.keywords_list[:200])
@@ -448,9 +661,7 @@ class MetadataWriter:
         """Return the path to exiftool, or None if not found."""
         exe = "exiftool.exe" if sys.platform == "win32" else "exiftool"
 
-        # In a frozen build, ExifTool ships next to the app executable (it's
-        # copied there post-build, keeping its exiftool_files/ folder intact —
-        # PyInstaller can't bundle that structure without breaking Perl's @INC).
+        # In a frozen build, ExifTool ships next to the app executable
         if getattr(sys, 'frozen', False):
             exedir = os.path.dirname(sys.executable)
             bundled = os.path.join(exedir, exe)
@@ -537,7 +748,6 @@ class MetadataWriter:
 
         # Keywords: append or replace
         if append_keywords:
-            # Only add keywords that don't already exist
             existing_lower = {k.lower() for k in existing_keywords}
             new_keywords = [
                 kw for kw in metadata.keywords
@@ -1151,6 +1361,7 @@ class PhotoScribe(QMainWindow):
         self.photos: list[PhotoItem] = []
         self.worker: Optional[OllamaWorker] = None
         self.settings = QSettings("PhotoScribe", "PhotoScribe")
+        self._detected_folder_context: Optional[FolderContext] = None
 
         self._init_ui()
         self._load_settings()
@@ -1279,7 +1490,7 @@ class PhotoScribe(QMainWindow):
         right_layout.setSpacing(8)
 
         # Tabs
-        tabs = QTabWidget()
+        self.tabs = QTabWidget()
 
         # ── Settings Tab ──
         settings_tab = QWidget()
@@ -1391,6 +1602,28 @@ class PhotoScribe(QMainWindow):
         context_layout.setSpacing(10)
         context_layout.setContentsMargins(12, 8, 12, 12)
 
+        # Folder context detection toggle
+        folder_ctx_row = QHBoxLayout()
+        self.folder_context_check = QCheckBox("Use folder context")
+        self.folder_context_check.setChecked(True)
+        self.folder_context_check.toggled.connect(self._on_folder_context_toggled)
+        folder_ctx_row.addWidget(self.folder_context_check)
+
+        self.folder_context_label = QLabel("")
+        self.folder_context_label.setStyleSheet(
+            "color: #e8a23a; font-size: 11px; font-style: italic;"
+        )
+        folder_ctx_row.addWidget(self.folder_context_label, 1)
+
+        self.clear_folder_ctx_btn = QPushButton("Clear detected")
+        self.clear_folder_ctx_btn.setFixedHeight(24)
+        self.clear_folder_ctx_btn.setStyleSheet("font-size: 11px; padding: 2px 10px;")
+        self.clear_folder_ctx_btn.setVisible(False)
+        self.clear_folder_ctx_btn.clicked.connect(self._clear_folder_context)
+        folder_ctx_row.addWidget(self.clear_folder_ctx_btn)
+
+        context_layout.addLayout(folder_ctx_row, 0, 0, 1, 2)
+
         fields = [
             ("Location:", "ctx_location", "e.g. Berry, NSW, Australia"),
             ("Event:", "ctx_event", "e.g. Berry Show 2026"),
@@ -1399,7 +1632,8 @@ class PhotoScribe(QMainWindow):
             ("Notes:", "ctx_notes", "Any additional context for the AI"),
         ]
         self.context_fields = {}
-        for row, (label, key, placeholder) in enumerate(fields):
+        for row_idx, (label, key, placeholder) in enumerate(fields):
+            row = row_idx + 1  # offset by 1 for the folder context row
             lbl = QLabel(label)
             lbl.setStyleSheet("color: #a0a0a0; font-size: 12px;")
             context_layout.addWidget(lbl, row, 0)
@@ -1428,6 +1662,42 @@ class PhotoScribe(QMainWindow):
         )
         self.skip_existing_check.setChecked(False)
         options_layout.addWidget(self.skip_existing_check)
+
+        self.describe_people_check = QCheckBox(
+            "Describe people in photos (positions, roles, actions)"
+        )
+        self.describe_people_check.setChecked(True)
+        self.describe_people_check.setToolTip(
+            "When enabled, the AI prompt includes instructions to describe\n"
+            "people visible in the photo (e.g. 'bride and groom',\n"
+            "'group of hikers', 'child playing'). Does not attempt\n"
+            "to identify individuals by name."
+        )
+        options_layout.addWidget(self.describe_people_check)
+
+        self.dedup_keywords_check = QCheckBox(
+            "Auto-deduplicate similar keywords (plurals, near-duplicates)"
+        )
+        self.dedup_keywords_check.setChecked(True)
+        options_layout.addWidget(self.dedup_keywords_check)
+
+        self.exif_date_fallback_check = QCheckBox(
+            "Use EXIF date as fallback when folder date not detected"
+        )
+        self.exif_date_fallback_check.setChecked(True)
+        options_layout.addWidget(self.exif_date_fallback_check)
+
+        self.gps_lookup_check = QCheckBox(
+            "Look up location from GPS coordinates (requires internet)"
+        )
+        self.gps_lookup_check.setChecked(False)
+        self.gps_lookup_check.setToolTip(
+            "When enabled and photos have GPS EXIF data, looks up the\n"
+            "place name via OpenStreetMap Nominatim (free public API).\n"
+            "This makes an external network request. Off by default."
+        )
+        self.gps_lookup_check.toggled.connect(self._on_gps_lookup_toggled)
+        options_layout.addWidget(self.gps_lookup_check)
 
         self.sidecar_check = QCheckBox(
             "Write to XMP sidecar for RAW files"
@@ -1469,7 +1739,7 @@ class PhotoScribe(QMainWindow):
         settings_layout.addWidget(options_group)
         settings_layout.addStretch()
 
-        tabs.addTab(settings_tab, "Settings")
+        self.tabs.addTab(settings_tab, "Settings")
 
         # ── Keywords Tab ──
         keywords_tab = QWidget()
@@ -1501,7 +1771,43 @@ class PhotoScribe(QMainWindow):
         kw_btn_row.addStretch()
         kw_layout.addLayout(kw_btn_row)
 
-        tabs.addTab(keywords_tab, "Keywords")
+        self.tabs.addTab(keywords_tab, "Keywords")
+
+        # ── Folder Presets Tab ──
+        presets_tab = QWidget()
+        presets_layout = QVBoxLayout(presets_tab)
+
+        presets_desc = QLabel(
+            "Define rules to auto-apply prompt presets or keyword files based on "
+            "folder names. When photos are loaded, if the detected folder name "
+            "contains a match, the corresponding preset/keywords are applied."
+        )
+        presets_desc.setWordWrap(True)
+        presets_desc.setStyleSheet("color: #888; font-size: 12px; margin-bottom: 8px;")
+        presets_layout.addWidget(presets_desc)
+
+        self.presets_table = QTableWidget()
+        self.presets_table.setColumnCount(3)
+        self.presets_table.setHorizontalHeaderLabels(["Folder Contains", "Prompt Preset", "Keywords File"])
+        self.presets_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.presets_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.presets_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.presets_table.verticalHeader().setVisible(False)
+        self.presets_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.presets_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        presets_layout.addWidget(self.presets_table)
+
+        presets_btn_row = QHBoxLayout()
+        add_preset_btn = QPushButton("Add Rule")
+        add_preset_btn.clicked.connect(self._add_folder_preset)
+        presets_btn_row.addWidget(add_preset_btn)
+        remove_preset_btn = QPushButton("Remove Selected")
+        remove_preset_btn.clicked.connect(self._remove_folder_preset)
+        presets_btn_row.addWidget(remove_preset_btn)
+        presets_btn_row.addStretch()
+        presets_layout.addLayout(presets_btn_row)
+
+        self.tabs.addTab(presets_tab, "Folder Presets")
 
         # ── Results Tab ──
         results_tab = QWidget()
@@ -1624,7 +1930,7 @@ class PhotoScribe(QMainWindow):
         results_splitter.setSizes([250, 500])
 
         results_layout.addWidget(results_splitter)
-        tabs.addTab(results_tab, "Results")
+        self.tabs.addTab(results_tab, "Results")
 
         # Track which result is selected
         self._current_result_index = -1
@@ -1640,9 +1946,9 @@ class PhotoScribe(QMainWindow):
             "font-size: 11px; color: #888;"
         )
         log_layout.addWidget(self.log_text)
-        tabs.addTab(log_tab, "Log")
+        self.tabs.addTab(log_tab, "Log")
 
-        right_layout.addWidget(tabs, 1)
+        right_layout.addWidget(self.tabs, 1)
 
         # ── Action buttons ──
         action_row = QHBoxLayout()
@@ -1735,6 +2041,7 @@ class PhotoScribe(QMainWindow):
         self.sidecar_naming_combo.setCurrentIndex(int(sidecar_naming))
         response_length = self.settings.value("response_length", "1")
         self.response_length_combo.setCurrentIndex(int(response_length))
+        self._load_folder_presets()
 
     def _save_settings(self):
         self.settings.setValue("ollama_url", self.ollama_url.text())
@@ -1761,12 +2068,16 @@ class PhotoScribe(QMainWindow):
             "photographer",
             self.context_fields["ctx_photographer"].text()
         )
+        self._save_folder_presets()
 
     def closeEvent(self, event):
         self._save_settings()
         if self.worker and self.worker.isRunning():
             self.worker.cancel()
             self.worker.wait(3000)
+        # Save progress if there are processed photos
+        if any(p.status == "done" for p in self.photos):
+            self._save_progress()
         event.accept()
 
     # ── Logging ──
@@ -1788,8 +2099,7 @@ class PhotoScribe(QMainWindow):
         FALLBACK_URLS = ["http://localhost:1234", "http://localhost:11434"]
 
         def _probe(probe_url):
-            """Try Ollama then OpenAI-compatible API at probe_url.
-            Returns (model_names, backend, label) or ([], None, '')."""
+            """Try Ollama then OpenAI-compatible API at probe_url."""
             # Ollama
             try:
                 resp = requests.get(f"{probe_url}/api/tags", timeout=3)
@@ -1908,6 +2218,14 @@ class PhotoScribe(QMainWindow):
         self._refresh_photo_table()
         self.log(f"Added {len(items)} photos ({len(self.photos)} total)")
         self.status_label.setText("Ready")
+
+        # Detect and apply folder context
+        filepaths = [item.filepath for item in items]
+        self._detect_and_apply_folder_context(filepaths)
+
+        # Try to restore progress from a previous session
+        self._load_progress(filepaths)
+
         self._file_loader = None
 
     def _clear_all(self):
@@ -1999,6 +2317,254 @@ class PhotoScribe(QMainWindow):
     def _on_photo_selected(self, row, col, prev_row, prev_col):
         pass  # Could show preview in future
 
+    # ── Folder context detection ──
+
+    def _on_gps_lookup_toggled(self, checked):
+        """Show one-time consent dialog when GPS lookup is first enabled."""
+        if not checked:
+            return
+        # If user has already consented, allow silently
+        if self.settings.value("gps_consent_given", "false") == "true":
+            return
+        # Show consent dialog
+        reply = QMessageBox.question(
+            self, "GPS Location Lookup",
+            "This feature sends your photos' GPS coordinates to OpenStreetMap\n"
+            "(nominatim.openstreetmap.org) to look up place names.\n\n"
+            "No image data is sent — only latitude and longitude.\n\n"
+            "Do you want to enable this?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.settings.setValue("gps_consent_given", "true")
+        else:
+            # User declined — uncheck without re-triggering this handler
+            self.gps_lookup_check.blockSignals(True)
+            self.gps_lookup_check.setChecked(False)
+            self.gps_lookup_check.blockSignals(False)
+
+    def _on_folder_context_toggled(self, state):
+        """Handle folder context checkbox toggle."""
+        if not state:
+            self._clear_folder_context()
+
+    def _clear_folder_context(self):
+        """Clear detected folder context and hide indicator."""
+        self._detected_folder_context = None
+        self.folder_context_label.setText("")
+        self.clear_folder_ctx_btn.setVisible(False)
+
+    def _apply_folder_context(self, ctx: FolderContext):
+        """Fill Location and Date/Time fields from detected context (only if empty)."""
+        if not self.folder_context_check.isChecked():
+            return
+        self._detected_folder_context = ctx
+        # Show detection indicator
+        self.folder_context_label.setText(f"Detected: {ctx.raw_folder}")
+        self.clear_folder_ctx_btn.setVisible(True)
+        # Fill fields only if they are currently empty
+        if not self.context_fields["ctx_location"].text().strip():
+            self.context_fields["ctx_location"].setText(ctx.location)
+        if not self.context_fields["ctx_datetime"].text().strip():
+            self.context_fields["ctx_datetime"].setText(ctx.date_str)
+        self.log(f"Folder context detected: {ctx.location}, {ctx.date_str} (from '{ctx.raw_folder}')")
+
+    def _detect_and_apply_folder_context(self, filepaths: list):
+        """Detect context from folder names and apply if found."""
+        if not self.folder_context_check.isChecked():
+            return
+        ctx = detect_batch_folder_context(filepaths)
+        if ctx:
+            self._apply_folder_context(ctx)
+            self._apply_folder_presets(ctx.raw_folder)
+
+        # EXIF date fallback
+        if self.exif_date_fallback_check.isChecked():
+            datetime_field = self.context_fields["ctx_datetime"]
+            if not datetime_field.text():
+                for fp in filepaths[:3]:
+                    exif_date = read_exif_date(fp)
+                    if exif_date:
+                        datetime_field.setText(exif_date)
+                        self.log(f"EXIF date fallback: {exif_date}")
+                        break
+
+        # GPS reverse-geocode (opt-in, makes external request)
+        if self.gps_lookup_check.isChecked():
+            location_field = self.context_fields["ctx_location"]
+            if not location_field.text():
+                for fp in filepaths[:5]:
+                    coords = read_gps_coordinates(fp)
+                    if coords:
+                        place = reverse_geocode(coords[0], coords[1])
+                        if place:
+                            location_field.setText(place)
+                            self.log(f"GPS location: {place}")
+                            break
+
+    # ── Folder presets ──
+
+    def _add_folder_preset(self):
+        """Add an empty row to the folder presets table."""
+        row = self.presets_table.rowCount()
+        self.presets_table.insertRow(row)
+        self.presets_table.setItem(row, 0, QTableWidgetItem(""))
+        self.presets_table.setItem(row, 1, QTableWidgetItem(""))
+        self.presets_table.setItem(row, 2, QTableWidgetItem(""))
+        self.presets_table.setRowHeight(row, 32)
+
+    def _remove_folder_preset(self):
+        """Remove the selected row from folder presets table."""
+        row = self.presets_table.currentRow()
+        if row >= 0:
+            self.presets_table.removeRow(row)
+
+    def _get_folder_presets(self) -> list:
+        """Get all folder presets as a list of dicts."""
+        presets = []
+        for row in range(self.presets_table.rowCount()):
+            folder_item = self.presets_table.item(row, 0)
+            prompt_item = self.presets_table.item(row, 1)
+            keywords_item = self.presets_table.item(row, 2)
+            presets.append({
+                "folder_contains": folder_item.text() if folder_item else "",
+                "prompt_preset": prompt_item.text() if prompt_item else "",
+                "keywords_file": keywords_item.text() if keywords_item else "",
+            })
+        return presets
+
+    def _save_folder_presets(self):
+        """Save folder presets to settings as JSON."""
+        presets = self._get_folder_presets()
+        self.settings.setValue("folder_presets", json.dumps(presets))
+
+    def _load_folder_presets(self):
+        """Load folder presets from settings."""
+        data = self.settings.value("folder_presets", "")
+        if not data:
+            return
+        try:
+            presets = json.loads(data)
+            self.presets_table.setRowCount(0)
+            for preset in presets:
+                row = self.presets_table.rowCount()
+                self.presets_table.insertRow(row)
+                self.presets_table.setItem(row, 0, QTableWidgetItem(preset.get("folder_contains", "")))
+                self.presets_table.setItem(row, 1, QTableWidgetItem(preset.get("prompt_preset", "")))
+                self.presets_table.setItem(row, 2, QTableWidgetItem(preset.get("keywords_file", "")))
+                self.presets_table.setRowHeight(row, 32)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    def _apply_folder_presets(self, folder_name: str):
+        """Apply matching folder presets based on folder name."""
+        if not folder_name:
+            return
+        presets = self._get_folder_presets()
+        folder_lower = folder_name.lower()
+        for preset in presets:
+            match_text = preset.get("folder_contains", "").strip().lower()
+            if not match_text:
+                continue
+            if match_text in folder_lower:
+                # Apply prompt preset if specified
+                prompt_text = preset.get("prompt_preset", "").strip()
+                if prompt_text:
+                    self.prompt_edit.setText(prompt_text)
+                    self.log(f"Folder preset applied prompt for '{match_text}'")
+                # Load keywords file if specified
+                keywords_file = preset.get("keywords_file", "").strip()
+                if keywords_file and os.path.isfile(keywords_file):
+                    try:
+                        with open(keywords_file, "r", encoding="utf-8") as f:
+                            self.keywords_edit.setPlainText(f.read())
+                        self.log(f"Folder preset loaded keywords from '{keywords_file}'")
+                    except Exception as e:
+                        self.log(f"Error loading preset keywords: {e}")
+                break  # Apply first matching rule only
+
+    # ── Progress persistence ──
+
+    _PROGRESS_FILENAME = ".photoscribe_progress.json"
+
+    def _get_progress_filepath(self) -> Optional[str]:
+        """Get progress file path based on first photo's directory."""
+        if not self.photos:
+            return None
+        first_dir = os.path.dirname(self.photos[0].filepath)
+        return os.path.join(first_dir, self._PROGRESS_FILENAME)
+
+    def _save_progress(self):
+        """Save current processing state to a JSON file for resume."""
+        progress_file = self._get_progress_filepath()
+        if not progress_file:
+            return
+        progress_data = []
+        for photo in self.photos:
+            entry = {"filepath": photo.filepath, "status": photo.status}
+            if photo.metadata:
+                entry["metadata"] = {
+                    "title": photo.metadata.title,
+                    "caption": photo.metadata.caption,
+                    "keywords": photo.metadata.keywords,
+                }
+            if photo.error_msg:
+                entry["error_msg"] = photo.error_msg
+            progress_data.append(entry)
+        try:
+            with open(progress_file, "w", encoding="utf-8") as f:
+                json.dump({"version": 1, "photos": progress_data}, f, indent=2, ensure_ascii=False)
+            self.log(f"Progress saved ({len(progress_data)} photos)")
+        except Exception as e:
+            self.log(f"Warning: could not save progress: {e}")
+
+    def _load_progress(self, filepaths: list) -> int:
+        """Restore progress for loaded files. Returns count of restored photos."""
+        if not filepaths:
+            return 0
+        first_dir = os.path.dirname(filepaths[0])
+        progress_file = os.path.join(first_dir, self._PROGRESS_FILENAME)
+        if not os.path.isfile(progress_file):
+            return 0
+        try:
+            with open(progress_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return 0
+        if not isinstance(data, dict) or data.get("version") != 1:
+            return 0
+        saved = {entry["filepath"]: entry for entry in data.get("photos", [])}
+        restored = 0
+        for photo in self.photos:
+            if photo.filepath in saved:
+                entry = saved[photo.filepath]
+                if entry.get("status") == "done" and "metadata" in entry:
+                    meta = entry["metadata"]
+                    photo.metadata = PhotoMetadata(
+                        title=meta.get("title", ""),
+                        caption=meta.get("caption", ""),
+                        keywords=meta.get("keywords", []),
+                    )
+                    photo.status = "done"
+                    restored += 1
+        if restored > 0:
+            self._refresh_photo_table()
+            self._refresh_results_table()
+            self.write_btn.setEnabled(True)
+            self.export_btn.setEnabled(True)
+            self.log(f"Resumed progress: {restored} photos already processed.")
+        return restored
+
+    def _clear_progress(self):
+        """Delete the progress file."""
+        progress_file = self._get_progress_filepath()
+        if progress_file and os.path.isfile(progress_file):
+            try:
+                os.remove(progress_file)
+            except Exception:
+                pass
+
     # ── Processing ──
 
     def _get_context_string(self):
@@ -2060,6 +2626,7 @@ class PhotoScribe(QMainWindow):
             keywords_list=self._get_keywords_list(),
             backend=getattr(self, "backend", "ollama"),
             max_tokens=max_tokens_map.get(self.response_length_combo.currentIndex(), 512),
+            describe_people=self.describe_people_check.isChecked(),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.result.connect(self._on_result)
@@ -2088,6 +2655,8 @@ class PhotoScribe(QMainWindow):
         if index < 0 or index >= len(self.photos):
             return
         if isinstance(result, PhotoMetadata):
+            if self.dedup_keywords_check.isChecked():
+                result.keywords = deduplicate_keywords(result.keywords)
             self.photos[index].metadata = result
             self.photos[index].status = "done"
         else:
@@ -2112,6 +2681,7 @@ class PhotoScribe(QMainWindow):
             self.write_btn.setEnabled(True)
             self.export_btn.setEnabled(True)
             self._refresh_results_table()
+            self._save_progress()
 
         self.worker = None
 
@@ -2275,6 +2845,8 @@ class PhotoScribe(QMainWindow):
             f"Metadata written to {success_count} file(s).\n"
             f"Errors: {error_count}"
         )
+        if success_count > 0:
+            self._clear_progress()
 
     # ── Export ──
 
