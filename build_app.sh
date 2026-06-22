@@ -100,7 +100,9 @@ echo -e "${GREEN}✓${NC} Build dependencies ready"
 
 # ── Generate .icns from logo.png ──
 ICNS_PATH="$SCRIPT_DIR/PhotoScribe.icns"
-if [ -f "$SCRIPT_DIR/logo.png" ]; then
+if [ -f "$ICNS_PATH" ]; then
+    echo -e "${GREEN}✓${NC} Using committed app icon (PhotoScribe.icns)"
+elif [ -f "$SCRIPT_DIR/logo.png" ]; then
     echo "Generating app icon..."
     ICONSET="$SCRIPT_DIR/PhotoScribe.iconset"
     mkdir -p "$ICONSET"

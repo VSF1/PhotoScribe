@@ -29,16 +29,14 @@ jobs:
         shell: pwsh
         run: ./fetch-exiftool.ps1
 
-      - name: Generate .ico from logo.png
+      - name: Ensure app icon (.ico)
+        shell: pwsh
         run: |
-          python -c "
-          from PIL import Image
-          img = Image.open('logo.png').convert('RGBA')
-          sizes = [(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)]
-          imgs = [img.resize(s, Image.LANCZOS) for s in sizes]
-          imgs[0].save('PhotoScribe.ico', format='ICO', sizes=sizes, append_images=imgs[1:])
-          print('Icon generated')
-          "
+          if (Test-Path PhotoScribe.ico) {
+            Write-Host "Using committed PhotoScribe.ico"
+          } else {
+            python -c "from PIL import Image; img=Image.open('logo.png').convert('RGBA'); sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)]; imgs=[img.resize(s, Image.LANCZOS) for s in sizes]; imgs[0].save('PhotoScribe.ico', format='ICO', sizes=sizes, append_images=imgs[1:]); print('Icon generated')"
+          }
 
       - name: Build with PyInstaller
         run: pyinstaller PhotoScribe-Windows.spec --noconfirm --clean
