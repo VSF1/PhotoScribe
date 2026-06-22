@@ -1,9 +1,9 @@
 name: Build Windows Installer
 
 on:
-  # Manual-trigger only for now — the Windows build is a work in progress
-  # (ExifTool download + bundling needs fixing). Re-enable the tag trigger
-  # once it produces a working installer.
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 jobs:
@@ -53,11 +53,19 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag.TrimStart('v')
+          $ref = "${{ github.ref_name }}"
+          if ($ref -like "v*") { $version = $ref.TrimStart('v') } else { $version = "0.0.0" }
+          Write-Host "Installer version: $version"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$version installer.iss
 
-      - name: Upload to GitHub Release
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoScribe-Setup
+          path: dist/PhotoScribe-Setup.exe
+
+      - name: Attach installer to release
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload ${{ github.ref_name }} dist/PhotoScribe-Setup.exe --clobber
