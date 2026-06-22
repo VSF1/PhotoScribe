@@ -96,7 +96,7 @@ class OllamaWorker(QThread):
     log_message = Signal(str)
 
     def __init__(self, photos, model, prompt, context, ollama_url,
-                 keywords_list=None, backend="ollama"):
+                 keywords_list=None, backend="ollama", max_tokens=2048):
         super().__init__()
         self.photos = photos
         self.model = model
@@ -105,6 +105,7 @@ class OllamaWorker(QThread):
         self.ollama_url = ollama_url
         self.keywords_list = keywords_list or []
         self.backend = backend  # "ollama" or "openai"
+        self.max_tokens = max_tokens
         self._cancelled = False
 
     def cancel(self):
@@ -174,6 +175,10 @@ class OllamaWorker(QThread):
             "model": self.model,
             "messages": [
                 {
+                    "role": "system",
+                    "content": "You are a photo metadata generator. Output ONLY a valid JSON object — no reasoning, no explanation, no markdown, no text before or after the JSON.",
+                },
+                {
                     "role": "user",
                     "content": full_prompt,
                     "images": [img_b64],
@@ -182,7 +187,7 @@ class OllamaWorker(QThread):
             "stream": False,
             "options": {
                 "temperature": 0.3,
-                "num_predict": 1024,
+                "num_predict": self.max_tokens,
             },
             "think": False,
         }
@@ -200,6 +205,10 @@ class OllamaWorker(QThread):
             "model": self.model,
             "messages": [
                 {
+                    "role": "system",
+                    "content": "You are a photo metadata generator. Output ONLY a valid JSON object — no reasoning, no explanation, no markdown, no text before or after the JSON.",
+                },
+                {
                     "role": "user",
                     "content": [
                         {"type": "text", "text": full_prompt},
@@ -210,8 +219,9 @@ class OllamaWorker(QThread):
                 }
             ],
             "temperature": 0.3,
-            "max_tokens": 1024,
+            "max_tokens": self.max_tokens,
             "stream": False,
+            "think": False,
         }
         resp = requests.post(
             f"{self.ollama_url}/v1/chat/completions",
@@ -219,7 +229,9 @@ class OllamaWorker(QThread):
             timeout=180
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        msg = resp.json()["choices"][0]["message"]
+        # Gemma 4 thinking models may return content in reasoning_content
+        return msg.get("content") or msg.get("reasoning_content", "")
 
     def run(self):
         full_prompt = self._build_prompt()
@@ -350,8 +362,13 @@ class MetadataWriter:
 
     @staticmethod
     def write_metadata(filepath, metadata: PhotoMetadata, backup=True,
-                       append_keywords=False, skip_existing=False):
-        """Write title, caption, keywords to file via exiftool."""
+                       append_keywords=False, skip_existing=False,
+                       use_sidecar=False, adobe_naming=False):
+        """Write title, caption, keywords to file (or XMP sidecar) via exiftool."""
+        p = Path(filepath)
+        if use_sidecar and p.suffix.lower() in RAW_EXTENSIONS:
+            return MetadataWriter._write_sidecar(p, metadata, adobe_naming=adobe_naming)
+
         exiftool = MetadataWriter.find_exiftool() or "exiftool"
         args = [exiftool]
 
@@ -408,6 +425,31 @@ class MetadataWriter:
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             raise RuntimeError(f"exiftool error: {result.stderr}")
+        return True
+
+    @staticmethod
+    def _write_sidecar(raw_path: Path, metadata: PhotoMetadata, adobe_naming=False):
+        """Write metadata to an XMP sidecar alongside the RAW file."""
+        exiftool = MetadataWriter.find_exiftool() or "exiftool"
+        xmp_path = raw_path.with_suffix(".xmp") if adobe_naming else Path(str(raw_path) + ".xmp")
+        args = [
+            exiftool,
+            "-overwrite_original",
+            f"-XMP-dc:Title={metadata.title}",
+            f"-XMP-dc:Description={metadata.caption}",
+            "-XMP-dc:Subject=",
+        ]
+        for kw in metadata.keywords:
+            args.append(f"-XMP-dc:Subject+={kw}")
+
+        if xmp_path.exists():
+            args.append(str(xmp_path))
+        else:
+            args.extend(["-o", str(xmp_path), str(raw_path)])
+
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            raise RuntimeError(f"exiftool sidecar error: {result.stderr}")
         return True
 
 
@@ -1082,6 +1124,43 @@ class PhotoScribe(QMainWindow):
         self.skip_existing_check.setChecked(False)
         options_layout.addWidget(self.skip_existing_check)
 
+        self.sidecar_check = QCheckBox(
+            "Write to XMP sidecar for RAW files"
+        )
+        self.sidecar_check.setChecked(True)
+        options_layout.addWidget(self.sidecar_check)
+
+        sidecar_naming_row = QHBoxLayout()
+        sidecar_naming_label = QLabel("DAM")
+        sidecar_naming_label.setStyleSheet("color: #a0a0a0; font-size: 12px;")
+        sidecar_naming_label.setFixedWidth(110)
+        sidecar_naming_row.addWidget(sidecar_naming_label)
+        self.sidecar_naming_combo = QComboBox()
+        self.sidecar_naming_combo.addItems([
+            "Adobe / Lightroom  (photo.xmp)",
+            "Darktable / DigiKam  (photo.cr2.xmp)",
+        ])
+        self.sidecar_naming_combo.setCurrentIndex(0)
+        self.sidecar_naming_combo.setFixedWidth(260)
+        sidecar_naming_row.addWidget(self.sidecar_naming_combo)
+        sidecar_naming_row.addStretch()
+        options_layout.addLayout(sidecar_naming_row)
+        self.sidecar_check.toggled.connect(self.sidecar_naming_combo.setEnabled)
+        self.sidecar_check.toggled.connect(sidecar_naming_label.setEnabled)
+
+        response_length_row = QHBoxLayout()
+        response_length_label = QLabel("Keyword density:")
+        response_length_label.setStyleSheet("color: #a0a0a0; font-size: 12px;")
+        response_length_label.setFixedWidth(110)
+        response_length_row.addWidget(response_length_label)
+        self.response_length_combo = QComboBox()
+        self.response_length_combo.addItems(["Fewer keywords", "Standard", "More keywords"])
+        self.response_length_combo.setCurrentIndex(1)
+        self.response_length_combo.setFixedWidth(200)
+        response_length_row.addWidget(self.response_length_combo)
+        response_length_row.addStretch()
+        options_layout.addLayout(response_length_row)
+
         settings_layout.addWidget(options_group)
         settings_layout.addStretch()
 
@@ -1345,6 +1424,12 @@ class PhotoScribe(QMainWindow):
         self.append_keywords_check.setChecked(append_kw == "true")
         skip_existing = self.settings.value("skip_existing", "false")
         self.skip_existing_check.setChecked(skip_existing == "true")
+        sidecar = self.settings.value("use_sidecar", "true")
+        self.sidecar_check.setChecked(sidecar == "true")
+        sidecar_naming = self.settings.value("sidecar_naming", "0")
+        self.sidecar_naming_combo.setCurrentIndex(int(sidecar_naming))
+        response_length = self.settings.value("response_length", "1")
+        self.response_length_combo.setCurrentIndex(int(response_length))
 
     def _save_settings(self):
         self.settings.setValue("ollama_url", self.ollama_url.text())
@@ -1361,6 +1446,12 @@ class PhotoScribe(QMainWindow):
             "skip_existing",
             "true" if self.skip_existing_check.isChecked() else "false"
         )
+        self.settings.setValue(
+            "use_sidecar",
+            "true" if self.sidecar_check.isChecked() else "false"
+        )
+        self.settings.setValue("sidecar_naming", str(self.sidecar_naming_combo.currentIndex()))
+        self.settings.setValue("response_length", str(self.response_length_combo.currentIndex()))
         self.settings.setValue(
             "photographer",
             self.context_fields["ctx_photographer"].text()
@@ -1635,6 +1726,7 @@ class PhotoScribe(QMainWindow):
         self.progress_bar.setMaximum(len(self.photos))
         self.progress_bar.setValue(0)
 
+        max_tokens_map = {0: 1024, 1: 2048, 2: 4096}
         self.worker = OllamaWorker(
             photos=self.photos,
             model=self.model_combo.currentText(),
@@ -1643,6 +1735,7 @@ class PhotoScribe(QMainWindow):
             ollama_url=self.ollama_url.text().rstrip("/"),
             keywords_list=self._get_keywords_list(),
             backend=getattr(self, "backend", "ollama"),
+            max_tokens=max_tokens_map.get(self.response_length_combo.currentIndex(), 512),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.result.connect(self._on_result)
@@ -1793,12 +1886,23 @@ class PhotoScribe(QMainWindow):
         if not completed:
             return
 
+        use_sidecar = self.sidecar_check.isChecked()
+        adobe_naming = self.sidecar_naming_combo.currentIndex() == 0
+        raw_count = sum(
+            1 for p in completed
+            if Path(p.filepath).suffix.lower() in RAW_EXTENSIONS
+        )
+        sidecar_note = ""
+        if use_sidecar and raw_count:
+            sidecar_note = f"\nRAW files ({raw_count}): metadata written to XMP sidecar."
+
         reply = QMessageBox.question(
             self, "Write Metadata",
             f"Write metadata to {len(completed)} file(s)?\n\n"
             f"{'Backup files will be created.' if self.backup_check.isChecked() else 'WARNING: No backup will be created!'}\n"
             f"{'Keywords will be appended to existing.' if self.append_keywords_check.isChecked() else 'Keywords will replace existing.'}\n"
-            f"{'Title/caption will be skipped if already present.' if self.skip_existing_check.isChecked() else 'Title/caption will be overwritten.'}",
+            f"{'Title/caption will be skipped if already present.' if self.skip_existing_check.isChecked() else 'Title/caption will be overwritten.'}"
+            f"{sidecar_note}",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes
         )
@@ -1815,9 +1919,16 @@ class PhotoScribe(QMainWindow):
                     backup=self.backup_check.isChecked(),
                     append_keywords=self.append_keywords_check.isChecked(),
                     skip_existing=self.skip_existing_check.isChecked(),
+                    use_sidecar=use_sidecar,
+                    adobe_naming=adobe_naming,
                 )
                 success += 1
-                self.log(f"Wrote metadata: {photo.filename}")
+                is_raw = Path(photo.filepath).suffix.lower() in RAW_EXTENSIONS
+                if use_sidecar and is_raw:
+                    xmp_name = Path(photo.filename).with_suffix(".xmp").name
+                    self.log(f"Wrote sidecar: {xmp_name}")
+                else:
+                    self.log(f"Wrote metadata: {photo.filename}")
             except Exception as e:
                 errors += 1
                 self.log(f"Error writing {photo.filename}: {e}")

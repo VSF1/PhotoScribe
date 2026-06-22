@@ -26,7 +26,8 @@ PRs are welcome. Here's how to keep things smooth.
 
 ## What we'd love help with
 
-- Headless/CLI mode for scripting and pipeline integration
+- Headless/CLI mode for scripting and pipeline integration (users are already wrapping the GUI with tools like OpenAI Codex; a proper `--headless` flag would make this cleaner)
+- Watched-folder mode — monitor a directory and auto-process new files as they appear (useful for import workflows)
 - Tests (there are currently none, so anything is an improvement)
 - Better error handling and edge cases
 - DAM integration (digiKam, darktable, etc.)
