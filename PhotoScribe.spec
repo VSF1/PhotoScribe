@@ -7,6 +7,10 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 # rawpy needs full collection (native libraw extension + data)
 rawpy_datas, rawpy_binaries, rawpy_hiddenimports = collect_all('rawpy')
 
+# pillow_heif bundles a native libheif — collect its binaries/data so
+# HEIC/HEIF (iPhone photos) work in the frozen app
+heif_datas, heif_binaries, heif_hiddenimports = collect_all('pillow_heif')
+
 # Platform plugin data for PySide6 — we only need the macOS cocoa plugin
 # and the standard image format plugins; not the full PySide6 data dump.
 pyside6_datas = collect_data_files('PySide6', includes=[
@@ -18,12 +22,13 @@ pyside6_datas = collect_data_files('PySide6', includes=[
 a = Analysis(
     ['photoscribe.py'],
     pathex=[],
-    binaries=rawpy_binaries,
-    datas=pyside6_datas + rawpy_datas + [
+    binaries=rawpy_binaries + heif_binaries,
+    datas=pyside6_datas + rawpy_datas + heif_datas + [
         ('logo.png', '.'),
     ],
     hiddenimports=(
         rawpy_hiddenimports
+        + heif_hiddenimports
         + [
             # PySide6 modules we actually use
             'PySide6.QtCore',
@@ -35,6 +40,8 @@ a = Analysis(
             'PIL.TiffImagePlugin',
             'PIL.PngImagePlugin',
             'PIL.WebPImagePlugin',
+            # HEIC/HEIF support
+            'pillow_heif',
         ]
     ),
     hookspath=[],
@@ -144,7 +151,7 @@ app = BUNDLE(
     name='PhotoScribe.app',
     icon='PhotoScribe.icns',
     bundle_identifier='com.photoscribe.app',
-    version='1.2.0',
+    version='1.2.1',
     info_plist={
         'NSPrincipalClass': 'NSApplication',
         'NSAppleScriptEnabled': False,
@@ -163,6 +170,8 @@ app = BUNDLE(
                     'com.canon.cr3-raw-image',
                     'com.nikon.nef-raw-image',
                     'com.sony.arw-raw-image',
+                    'public.heic',
+                    'public.heif',
                 ],
             }
         ],

@@ -3,3 +3,4 @@ Pillow>=10.0
 requests>=2.31
 PyExifTool>=0.5
 rawpy>=0.21
+pillow-heif>=0.13

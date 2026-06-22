@@ -28,6 +28,13 @@ try:
     HAS_RAWPY = True
 except ImportError:
     HAS_RAWPY = False
+
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()  # Lets PIL open .heic/.heif (iPhone photos)
+    HAS_HEIF = True
+except ImportError:
+    HAS_HEIF = False
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -52,6 +59,7 @@ from PySide6.QtGui import (
 SUPPORTED_EXTENSIONS = {
     # Standard image formats
     ".jpg", ".jpeg", ".tif", ".tiff", ".png", ".webp",
+    ".heic", ".heif",
     # RAW formats
     ".dng", ".cr2", ".cr3", ".nef", ".arw", ".orf", ".raf",
     ".rw2", ".pef", ".srw", ".x3f", ".3fr", ".mrw", ".nrw",
@@ -121,14 +129,31 @@ class OllamaWorker(QThread):
                     raise RuntimeError(
                         f"rawpy not installed. Run: pip install rawpy"
                     )
-                # Convert RAW to RGB array via LibRaw
-                with rawpy.imread(filepath) as raw:
-                    rgb = raw.postprocess(
-                        use_camera_wb=True,
-                        half_size=True,  # Faster, plenty for AI analysis
-                        no_auto_bright=False,
-                    )
-                img = Image.fromarray(rgb)
+                img = None
+                # Prefer the embedded preview JPEG: it's fast and avoids
+                # LibRaw postprocess edge cases (some DNGs — phone/linear/HDR —
+                # decode dark or blank, which makes the AI return nothing).
+                try:
+                    with rawpy.imread(filepath) as raw:
+                        thumb = raw.extract_thumb()
+                    if thumb.format == rawpy.ThumbFormat.JPEG:
+                        img = Image.open(BytesIO(thumb.data)).convert("RGB")
+                    elif thumb.format == rawpy.ThumbFormat.BITMAP:
+                        img = Image.fromarray(thumb.data)
+                    # Ignore tiny previews — too small for useful analysis
+                    if img is not None and max(img.size) < 512:
+                        img = None
+                except Exception:
+                    img = None
+                # Fall back to a full RAW decode if there's no usable preview
+                if img is None:
+                    with rawpy.imread(filepath) as raw:
+                        rgb = raw.postprocess(
+                            use_camera_wb=True,
+                            half_size=True,  # Faster, plenty for AI analysis
+                            no_auto_bright=False,
+                        )
+                    img = Image.fromarray(rgb)
             else:
                 img = Image.open(filepath)
                 img = img.convert("RGB")
@@ -250,34 +275,58 @@ class OllamaWorker(QThread):
             try:
                 img_b64 = self._encode_image(photo.filepath)
                 self.log_message.emit(f"Sending to {self.model}...")
-                response_text = call_fn(img_b64, full_prompt)
-                self.log_message.emit(f"Response received ({len(response_text)} chars)")
 
-                # Parse JSON from response (handle markdown fences)
-                cleaned = response_text.strip()
-                if cleaned.startswith("```"):
-                    lines = cleaned.split("\n")
-                    lines = [l for l in lines if not l.strip().startswith("```")]
-                    cleaned = "\n".join(lines).strip()
+                # Call the model, retrying once if it returns nothing usable.
+                # A blank or JSON-less reply is what produces the
+                # "Expecting value: line 1 column 1 (char 0)" error.
+                meta = None
+                last_reason = "no response"
+                for attempt in range(2):
+                    if attempt > 0:
+                        self.log_message.emit(
+                            "Empty/unparseable response — retrying once..."
+                        )
+                    response_text = call_fn(img_b64, full_prompt)
+                    self.log_message.emit(
+                        f"Response received ({len(response_text)} chars)"
+                    )
 
-                # Find the JSON object in the response
-                start = cleaned.find("{")
-                end = cleaned.rfind("}") + 1
-                if start >= 0 and end > start:
-                    cleaned = cleaned[start:end]
+                    # Strip markdown fences and isolate the JSON object
+                    cleaned = response_text.strip()
+                    if cleaned.startswith("```"):
+                        lines = cleaned.split("\n")
+                        lines = [l for l in lines if not l.strip().startswith("```")]
+                        cleaned = "\n".join(lines).strip()
+                    start = cleaned.find("{")
+                    end = cleaned.rfind("}") + 1
+                    if start >= 0 and end > start:
+                        cleaned = cleaned[start:end]
 
-                data = json.loads(cleaned)
-                meta = PhotoMetadata(
-                    title=data.get("title", "").strip(),
-                    caption=data.get("caption", "").strip(),
-                    keywords=[k.strip() for k in data.get("keywords", []) if k.strip()]
-                )
+                    if not cleaned:
+                        last_reason = "the model returned an empty response"
+                        continue
+                    try:
+                        data = json.loads(cleaned)
+                    except json.JSONDecodeError as e:
+                        last_reason = f"the response wasn't valid JSON ({e})"
+                        continue
+
+                    meta = PhotoMetadata(
+                        title=data.get("title", "").strip(),
+                        caption=data.get("caption", "").strip(),
+                        keywords=[k.strip() for k in data.get("keywords", []) if k.strip()]
+                    )
+                    break
+
+                if meta is None:
+                    raise ValueError(
+                        f"Couldn't read metadata — {last_reason}. "
+                        f"Try a different model, or increase Keyword density."
+                    )
+
                 self.result.emit(i, meta)
                 self.log_message.emit(f"Done: {photo.filename}")
 
-            except json.JSONDecodeError as e:
-                self.log_message.emit(f"JSON parse error: {e}\nRaw: {response_text[:300]}")
-                self.result.emit(i, f"Failed to parse model response: {e}")
             except requests.exceptions.ConnectionError:
                 self.log_message.emit("Connection failed — is your AI backend running?")
                 self.result.emit(i, "Cannot connect to AI backend. Check the URL and that it's running.")
@@ -747,7 +796,7 @@ class DropZone(QFrame):
         text_label.setStyleSheet("background: transparent; border: none;")
         layout.addWidget(text_label)
 
-        formats_label = QLabel("JPEG  ·  TIFF  ·  PNG  ·  RAW  ·  DNG  ·  CR2/CR3  ·  NEF  ·  ARW  ·  ORF  ·  RAF")
+        formats_label = QLabel("JPEG  ·  HEIC  ·  TIFF  ·  PNG  ·  RAW  ·  DNG  ·  CR2/CR3  ·  NEF  ·  ARW  ·  ORF  ·  RAF")
         formats_label.setStyleSheet(
             "color: #555; font-size: 11px; background: transparent; border: none;"
         )
@@ -1562,7 +1611,7 @@ class PhotoScribe(QMainWindow):
     def _browse_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "Select Photos", "",
-            "Images (*.jpg *.jpeg *.tif *.tiff *.png *.dng *.webp "
+            "Images (*.jpg *.jpeg *.tif *.tiff *.png *.heic *.heif *.dng *.webp "
             "*.cr2 *.cr3 *.nef *.arw *.orf *.raf *.rw2 *.pef *.srw *.raw)"
         )
         if files:
