@@ -1221,11 +1221,11 @@ class PhotoScribe(QMainWindow):
         sidecar_naming_row.addWidget(sidecar_naming_label)
         self.sidecar_naming_combo = QComboBox()
         self.sidecar_naming_combo.addItems([
-            "Adobe / Lightroom  (photo.xmp)",
+            "Adobe / Lightroom / PhotoLab  (photo.xmp)",
             "Darktable / DigiKam  (photo.cr2.xmp)",
         ])
         self.sidecar_naming_combo.setCurrentIndex(0)
-        self.sidecar_naming_combo.setFixedWidth(260)
+        self.sidecar_naming_combo.setFixedWidth(300)
         sidecar_naming_row.addWidget(self.sidecar_naming_combo)
         sidecar_naming_row.addStretch()
         options_layout.addLayout(sidecar_naming_row)

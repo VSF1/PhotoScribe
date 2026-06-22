@@ -2,6 +2,11 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.2.4] — 2026-06-22
+
+### Added
+- **DxO PhotoLab support** for RAW XMP sidecars. PhotoLab uses the same `photo.xmp` convention as Adobe/Lightroom, so the sidecar naming option is now labelled **"Adobe / Lightroom / PhotoLab"**. Title, description, and keywords round-trip into PhotoLab (with its *"Synchronize metadata with XMP sidecars"* preference enabled). No write-logic change — purely confirmation + labelling.
+
 ## [1.2.3] — 2026-06-22
 
 ### Fixed

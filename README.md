@@ -92,6 +92,13 @@ You can generate and export metadata without ExifTool, but you won't be able to 
 
 PhotoScribe writes to both IPTC and embedded XMP, which means it works with every major cataloguing application: **Lightroom Classic, Capture One, Photo Mechanic, Bridge, Finder,** and anything else that reads standard metadata.
 
+**RAW files — XMP sidecars.** For RAW formats, enable *"Write to XMP sidecar for RAW files"* in Options and pick the naming convention your software expects:
+
+- **Adobe / Lightroom / PhotoLab** — `photo.xmp` (extension replaced). Use for Lightroom Classic, Bridge, and **DxO PhotoLab**.
+- **Darktable / DigiKam** — `photo.cr2.xmp` (extension kept). Use for darktable, digiKam, and similar DAM tools.
+
+> **DxO PhotoLab users:** turn on *Preferences → "Synchronize metadata with XMP sidecars"* so PhotoLab reads the sidecar. Then, to pull in metadata PhotoScribe has written, select the photo(s) and choose **File → Metadata → Read Metadata From Image** — the title, description, and keywords will appear. PhotoLab scatters the standard IPTC fields across several panel sections rather than grouping them, so they're not all in one place: **Description** sits under *IPTC - Content*, **Title** under *IPTC - Status*, and keywords in the *Keywords* panel. It's all there — just spread around.
+
 ---
 
 ## Settings and options
