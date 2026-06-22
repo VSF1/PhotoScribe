@@ -194,6 +194,31 @@ class OllamaWorker(QThread):
         )
         return "\n\n".join(parts)
 
+    def _clean_keywords(self, raw):
+        """Normalise the model's keywords.
+
+        - Snap to the user's exact vocabulary spelling: if a generated keyword
+          matches a vocabulary term case-insensitively, use the vocabulary's
+          spelling verbatim. This stops Lightroom (which matches keywords as
+          case-sensitive strings) treating "sunset" as a new keyword separate
+          from your existing "Sunset".
+        - Drop blanks and case-insensitive duplicates, keeping first order.
+        """
+        canon = {v.strip().lower(): v.strip()
+                 for v in self.keywords_list if v and v.strip()}
+        out, seen = [], set()
+        for kw in raw:
+            kw = (kw or "").strip()
+            if not kw:
+                continue
+            final = canon.get(kw.lower(), kw)
+            key = final.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(final)
+        return out
+
     def _call_ollama(self, img_b64, full_prompt):
         """Ollama /api/chat format."""
         payload = {
@@ -314,7 +339,7 @@ class OllamaWorker(QThread):
                     meta = PhotoMetadata(
                         title=data.get("title", "").strip(),
                         caption=data.get("caption", "").strip(),
-                        keywords=[k.strip() for k in data.get("keywords", []) if k.strip()]
+                        keywords=self._clean_keywords(data.get("keywords", []))
                     )
                     break
 
