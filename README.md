@@ -55,6 +55,10 @@ Ollama uses `http://localhost:11434` (the PhotoScribe default). It starts automa
 
 > **Which model?** On an M-series Mac with 16GB+ RAM, a 12b model gives noticeably better results. On 8GB machines, the 4b model is faster and still solid. The download is 3–8GB and only happens once — everything runs offline after that.
 
+**Not sure which to pick?** Click **Recommend Model** (top-right of Settings). PhotoScribe detects your GPU/RAM and suggests the best Gemma model for your machine — with the exact name to search for in LM Studio, or a one-click pull for Ollama.
+
+![Model recommendation](screenshot-recommend.png)
+
 ### 3. ExifTool — writes metadata to your files
 
 ExifTool is a small, free utility that does the actual work of embedding metadata into your photo files. PhotoScribe uses it behind the scenes when you click "Write Metadata to Files."
@@ -82,6 +86,10 @@ You can generate and export metadata without ExifTool, but you won't be able to 
 5. **Review everything** in the Results tab. You can edit titles, captions, and keywords directly before writing
 6. **Click Write Metadata to Files** when you're happy
 
+You can also **Export CSV** to review or bulk-edit a whole batch in a spreadsheet, then **Import CSV** to load your edits back in. Double-click any processed photo in the list to jump straight to its entry in the Results tab.
+
+![Reviewing results with the photo preview](screenshot-results.png)
+
 ### Supported formats
 
 **Standard:** JPEG, HEIC/HEIF (iPhone photos), TIFF, PNG, WebP
@@ -107,19 +115,33 @@ PhotoScribe writes to both IPTC and embedded XMP, which means it works with ever
 
 Fill in Location, Event, Date/Time, and any notes before you process. The AI uses this to produce much more accurate and relevant results. For a landscape shoot, put the location. For an event, describe what it was. The difference in quality is significant.
 
+### Folder context detection
+
+Tick **Use folder context** and PhotoScribe reads your folder names to pre-fill the batch context. Dated names like `20250315 - Berry NSW` or `2025-03-15 Berry NSW` (and dot-separated variants) are parsed into Location and Date/Time — it walks up the directory tree, so nested folders still inherit the parent's context. It only fills fields you've left empty, so your manual input is never overwritten.
+
+- **Use EXIF date as fallback** — when no date is in the folder name, reads `DateTimeOriginal` from the photo instead.
+- **Look up location from GPS coordinates** *(opt-in, off by default)* — if a photo has GPS data, looks up a place name via OpenStreetMap. Because this sends coordinates to an external service, the first time you enable it PhotoScribe asks you to confirm. Everything else stays on your machine.
+
+### Folder presets
+
+In the **Folder Presets** tab you can define rules: *if a folder name contains X, auto-apply a prompt preset or a keyword list.* Useful for recurring subjects — e.g. a folder containing "wedding" applies your Event preset and wedding vocabulary automatically. First matching rule wins.
+
 ### Prompts and presets
 
-The default prompt works well for most photography. Presets are provided for Landscape, Event, and Product photography. You can edit the prompt freely or save your own wording — it persists between sessions.
+The default prompt works well for most photography, with built-in presets for Landscape, Event, and Product. Edit the prompt freely, then manage your own presets from the dropdown — **Save As** to create one, **Update** to overwrite, **Delete** to remove. Custom presets persist between sessions; the built-in ones can't be deleted, only overridden.
 
 ### Keyword vocabulary
 
 If you need consistent keywording across your catalogue, paste in your keyword list (one per line, or comma-separated). The AI will prefer terms from your vocabulary where applicable. You can also load a vocabulary from a text file.
 
-### Write options
+### Options
 
 - **Create backup files** — makes a `.original` copy of each file before writing. On by default. Turn it off once you trust the workflow
 - **Append keywords** — adds new keywords to any existing ones rather than replacing them
 - **Skip title/caption if already present** — useful for re-running to add keywords to already-captioned files
+- **Describe people in photos** — instructs the AI to describe people's positions, roles, and actions (it never tries to identify anyone by name)
+- **Auto-deduplicate similar keywords** — collapses plural and case variants so you don't end up with both "tree" and "trees"
+- **Keyword density** — Fewer / Standard / More, if you want shorter or richer keyword sets
 
 ### Remote Ollama
 

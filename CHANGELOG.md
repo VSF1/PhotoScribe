@@ -2,6 +2,29 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.3.0] — 2026-06-24
+
+A big feature release, with substantial community contributions from
+[@bridgew99](https://github.com/bridgew99) (performance, context detection, UI/UX).
+
+### Added
+- **Folder context detection** — parses dated folder names (e.g. `20250315 - Berry NSW`, ISO and dot-separated variants), walking up the tree, to pre-fill Location and Date/Time (empty fields only).
+- **Folder Presets tab** — rules to auto-apply a prompt preset or keyword list based on folder name.
+- **Editable prompt presets** — Save As / Update / Delete; custom presets persist, built-ins can be overridden.
+- **CSV import** — load metadata from a previously exported (or spreadsheet-edited) CSV; matches by filepath then filename and reports unmatched rows.
+- **Photo preview** in the Results tab, and **double-click** a photo to jump to its result.
+- **Model recommender** — detects GPU/RAM and suggests the best Gemma model (LM Studio name or Ollama pull).
+- **Describe people** option — describe positions/roles/actions, never names.
+- **Auto-deduplicate keywords** — removes plural/case near-duplicates.
+- **EXIF date fallback** when no folder date is detected.
+- **GPS reverse-geocode** (opt-in, off by default, one-time consent) — place-name lookup via OpenStreetMap; reads the image and co-located XMP sidecar.
+- **Progress resume** — interrupted batches (and manual edits) restore on reload.
+- **Batch timing** — per-photo seconds in the log plus a batch summary in the status bar.
+
+### Changed
+- **Much faster** large-folder handling: no thumbnail generation at load, pipelined image pre-encoding, single-row table updates, threaded metadata writing with a progress bar.
+- Options laid out in two columns; window sizes to the screen and centres on launch.
+
 ## [1.2.4] — 2026-06-22
 
 ### Added
