@@ -177,6 +177,9 @@ On a Mac with 8GB RAM and a 12b model, the model is partially being swapped in a
 **Metadata doesn't appear in Lightroom after writing**
 Lightroom caches metadata. Select the photos and choose **Metadata → Read Metadata from File** to force a re-read.
 
+**Windows flags the installer as a virus / SmartScreen blocks it**
+This is a **false positive**. The installer is built with PyInstaller, whose launcher is commonly misidentified by antivirus heuristics, and it isn't code-signed yet (free open-source signing via SignPath is being set up). The installer is built in the open on GitHub Actions from the source here — nothing is added by hand. To proceed: on the SmartScreen prompt click **More info → Run anyway**; if Defender quarantined it, allow/restore it under *Virus & threat protection → Protection history*. You can verify your download with `Get-FileHash .\PhotoScribe-Setup.exe` against the SHA-256 listed on the release.
+
 ---
 
 ## For developers
