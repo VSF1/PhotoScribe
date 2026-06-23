@@ -1384,6 +1384,7 @@ class PhotoScribe(QMainWindow):
         self.worker: Optional[OllamaWorker] = None
         self.settings = QSettings("PhotoScribe", "PhotoScribe")
         self._detected_folder_context: Optional[FolderContext] = None
+        self._preview_cache = {}
 
         self._init_ui()
         self._load_settings()
@@ -1496,7 +1497,15 @@ class PhotoScribe(QMainWindow):
             "QTableWidget { alternate-background-color: #1c1c20; }"
         )
         self.photo_table.currentCellChanged.connect(self._on_photo_selected)
+        self.photo_table.cellDoubleClicked.connect(self._on_photo_double_clicked)
         left_layout.addWidget(self.photo_table, 1)
+
+        # Folder name
+        self.folder_name_label = QLabel("")
+        self.folder_name_label.setStyleSheet(
+            "color: #e8a23a; font-size: 12px; font-weight: 600; border: none;"
+        )
+        left_layout.addWidget(self.folder_name_label)
 
         # Photo count
         self.photo_count_label = QLabel("0 photos loaded")
@@ -1553,7 +1562,34 @@ class PhotoScribe(QMainWindow):
             "Ollama: http://localhost:11434"
         )
         model_layout.addWidget(self.ollama_url)
+
+        recommend_btn = QPushButton("Recommend Model")
+        recommend_btn.setFixedWidth(160)
+        recommend_btn.setToolTip("Detect your GPU/RAM and recommend the best model")
+        recommend_btn.clicked.connect(self._recommend_model)
+        model_layout.addWidget(recommend_btn)
+
         settings_layout.addWidget(model_group)
+
+        # Model download progress (hidden by default)
+        self.model_download_widget = QWidget()
+        dl_layout = QVBoxLayout(self.model_download_widget)
+        dl_layout.setContentsMargins(0, 4, 0, 0)
+        dl_layout.setSpacing(4)
+        self.model_download_label = QLabel("")
+        self.model_download_label.setStyleSheet(
+            "font-size: 14px; font-weight: 600; color: #e8a23a; border: none;"
+        )
+        dl_layout.addWidget(self.model_download_label)
+        self.model_download_progress = QProgressBar()
+        self.model_download_progress.setMinimum(0)
+        self.model_download_progress.setMaximum(100)
+        self.model_download_progress.setTextVisible(True)
+        self.model_download_progress.setFormat("%p%")
+        self.model_download_progress.setFixedHeight(14)
+        dl_layout.addWidget(self.model_download_progress)
+        self.model_download_widget.setVisible(False)
+        settings_layout.addWidget(self.model_download_widget)
 
         # Prompt
         prompt_group = QGroupBox("Prompt")
@@ -1577,46 +1613,35 @@ class PhotoScribe(QMainWindow):
         preset_label.setStyleSheet("color: #888; font-size: 11px;")
         preset_row.addWidget(preset_label)
 
-        for name, prompt_text in [
-            ("Landscape", (
-                "Analyse this landscape photograph.\n\n"
-                "Title: A concise, evocative title (5-10 words).\n"
-                "Caption: Describe the scene, terrain, weather, light quality, "
-                "and mood (1-3 sentences).\n"
-                "Keywords: 15-20 keywords covering landscape type, geological "
-                "features, vegetation, sky conditions, season, time of day, "
-                "colours, and photographic style."
-            )),
-            ("Event", (
-                "Analyse this event photograph.\n\n"
-                "Title: A descriptive title capturing the moment (5-10 words).\n"
-                "Caption: Describe the action, participants, setting, and "
-                "atmosphere (1-3 sentences).\n"
-                "Keywords: 15-20 keywords covering the event type, activities, "
-                "people, setting, mood, and photographic style."
-            )),
-            ("Product", (
-                "Analyse this product photograph.\n\n"
-                "Title: A clear, descriptive title (5-10 words).\n"
-                "Caption: Describe the product, its features, styling, "
-                "and presentation (1-3 sentences).\n"
-                "Keywords: 15-20 keywords covering product type, features, "
-                "materials, colours, style, and use case."
-            )),
-            ("Default", None),
-        ]:
-            btn = QPushButton(name)
-            btn.setFixedHeight(24)
-            btn.setStyleSheet("font-size: 11px; padding: 2px 10px;")
-            if prompt_text:
-                btn.clicked.connect(lambda _, t=prompt_text: self.prompt_edit.setText(t))
-            else:
-                btn.clicked.connect(self._reset_prompt)
-            preset_row.addWidget(btn)
+        self.prompt_preset_combo = QComboBox()
+        self.prompt_preset_combo.setMinimumWidth(160)
+        self.prompt_preset_combo.currentTextChanged.connect(self._on_prompt_preset_selected)
+        preset_row.addWidget(self.prompt_preset_combo)
+
+        save_preset_btn = QPushButton("Save As...")
+        save_preset_btn.setFixedHeight(24)
+        save_preset_btn.setStyleSheet("font-size: 11px; padding: 2px 10px;")
+        save_preset_btn.clicked.connect(self._save_prompt_preset)
+        preset_row.addWidget(save_preset_btn)
+
+        overwrite_preset_btn = QPushButton("Update")
+        overwrite_preset_btn.setFixedHeight(24)
+        overwrite_preset_btn.setStyleSheet("font-size: 11px; padding: 2px 10px;")
+        overwrite_preset_btn.clicked.connect(self._overwrite_prompt_preset)
+        preset_row.addWidget(overwrite_preset_btn)
+
+        delete_preset_btn = QPushButton("Delete")
+        delete_preset_btn.setFixedHeight(24)
+        delete_preset_btn.setStyleSheet("font-size: 11px; padding: 2px 10px; color: #c0392b;")
+        delete_preset_btn.clicked.connect(self._delete_prompt_preset)
+        preset_row.addWidget(delete_preset_btn)
 
         preset_row.addStretch()
         prompt_layout.addLayout(preset_row)
         settings_layout.addWidget(prompt_group)
+
+        # Initialise prompt presets
+        self._init_prompt_presets()
 
         # Batch context
         context_group = QGroupBox("Batch Context (applied to all photos)")
@@ -1899,6 +1924,13 @@ class PhotoScribe(QMainWindow):
         detail_layout.setContentsMargins(8, 0, 0, 0)
         detail_layout.setSpacing(8)
 
+        # Folder path in results
+        self.detail_folder = QLabel("")
+        self.detail_folder.setStyleSheet(
+            "font-size: 11px; color: #888; border: none; padding: 0;"
+        )
+        detail_layout.addWidget(self.detail_folder)
+
         # Filename header
         self.detail_filename = QLabel("Select a photo to view metadata")
         self.detail_filename.setStyleSheet(
@@ -1906,6 +1938,17 @@ class PhotoScribe(QMainWindow):
             "padding: 4px 0; border: none;"
         )
         detail_layout.addWidget(self.detail_filename)
+
+        # Photo preview
+        self.detail_preview = QLabel()
+        self.detail_preview.setFixedHeight(200)
+        self.detail_preview.setAlignment(Qt.AlignCenter)
+        self.detail_preview.setStyleSheet(
+            "background-color: #1a1a1e; border: 1px solid #2a2a30; "
+            "border-radius: 6px; color: #555; font-size: 12px;"
+        )
+        self.detail_preview.setText("No preview")
+        detail_layout.addWidget(self.detail_preview)
 
         # Title
         title_label = QLabel("TITLE")
@@ -1960,7 +2003,7 @@ class PhotoScribe(QMainWindow):
         results_splitter.setSizes([250, 500])
 
         results_layout.addWidget(results_splitter)
-        self.tabs.addTab(results_tab, "Results")
+        self._results_tab_index = self.tabs.addTab(results_tab, "Results")
 
         # Track which result is selected
         self._current_result_index = -1
@@ -2009,6 +2052,12 @@ class PhotoScribe(QMainWindow):
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._export_csv)
         action_row.addWidget(self.export_btn)
+
+        self.import_btn = QPushButton("📥  Import CSV")
+        self.import_btn.setObjectName("exportBtn")
+        self.import_btn.setMinimumHeight(40)
+        self.import_btn.clicked.connect(self._import_csv)
+        action_row.addWidget(self.import_btn)
 
         right_layout.addLayout(action_row)
 
@@ -2247,6 +2296,13 @@ class PhotoScribe(QMainWindow):
         self.photos.extend(items)
         self._refresh_photo_table()
         self.log(f"Added {len(items)} photos ({len(self.photos)} total)")
+
+        # Show source folder name
+        if items:
+            parent_folder = os.path.basename(os.path.dirname(items[0].filepath))
+            if parent_folder:
+                self.folder_name_label.setText(f"\U0001f4c1 {parent_folder}")
+
         self.status_label.setText("Ready")
 
         # Detect and apply folder context
@@ -2260,11 +2316,13 @@ class PhotoScribe(QMainWindow):
 
     def _clear_all(self):
         self.photos.clear()
+        self.folder_name_label.setText("")
         self._current_result_index = -1
         self._refresh_photo_table()
         self._refresh_results_table()
         # Clear detail panel
         self._updating_detail = True
+        self.detail_folder.setText("")
         self.detail_filename.setText("Select a photo to view metadata")
         self.detail_title.clear()
         self.detail_caption.clear()
@@ -2346,6 +2404,21 @@ class PhotoScribe(QMainWindow):
 
     def _on_photo_selected(self, row, col, prev_row, prev_col):
         pass  # Could show preview in future
+
+    def _on_photo_double_clicked(self, row, col):
+        """Double-click jumps to the photo in the Results tab."""
+        if row < 0 or row >= len(self.photos):
+            return
+        photo = self.photos[row]
+        if photo.status != "done" or not photo.metadata:
+            return
+        completed = self._get_completed_photos()
+        try:
+            result_idx = completed.index(photo)
+        except ValueError:
+            return
+        self.tabs.setCurrentIndex(self._results_tab_index)
+        self.results_table.selectRow(result_idx)
 
     # ── Folder context detection ──
 
@@ -2769,13 +2842,51 @@ class PhotoScribe(QMainWindow):
     def _load_detail(self, photo):
         """Load a photo's metadata into the detail panel."""
         self._updating_detail = True
+        # Show folder path
+        self.detail_folder.setText(os.path.dirname(photo.filepath))
         self.detail_filename.setText(photo.filename)
+        # Load preview
+        self._load_preview(photo.filepath)
         self.detail_title.setText(photo.metadata.title)
         self.detail_caption.setText(photo.metadata.caption)
         self.detail_keywords.setText(", ".join(photo.metadata.keywords))
         kw_count = len(photo.metadata.keywords)
         self.kw_count_label.setText(f"{kw_count} keyword{'s' if kw_count != 1 else ''}")
         self._updating_detail = False
+
+    def _load_preview(self, filepath: str):
+        """Load photo preview with caching."""
+        if not hasattr(self, "_preview_cache"):
+            self._preview_cache = {}
+        if filepath in self._preview_cache:
+            self.detail_preview.setPixmap(self._preview_cache[filepath])
+            return
+        try:
+            ext = Path(filepath).suffix.lower()
+            if ext in RAW_EXTENSIONS and HAS_RAWPY:
+                with rawpy.imread(filepath) as raw:
+                    rgb = raw.postprocess(use_camera_wb=True, half_size=True)
+                img = Image.fromarray(rgb)
+            else:
+                img = Image.open(filepath)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            max_w, max_h = 400, 200
+            ratio = min(max_w / img.width, max_h / img.height)
+            if ratio < 1:
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+            data = img.tobytes("raw", "RGB")
+            qimg = QImage(data, img.width, img.height, img.width * 3, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimg)
+            # Cache (limit 50 entries)
+            if len(self._preview_cache) >= 50:
+                oldest = next(iter(self._preview_cache))
+                del self._preview_cache[oldest]
+            self._preview_cache[filepath] = pixmap
+            self.detail_preview.setPixmap(pixmap)
+        except Exception:
+            self.detail_preview.setText("Preview unavailable")
 
     def _on_detail_edited(self):
         """Sync edits from detail panel back to the photo data."""
@@ -2899,8 +3010,15 @@ class PhotoScribe(QMainWindow):
             QMessageBox.information(self, "Export", "No processed photos to export.")
             return
 
+        # Default filename from source folder
+        default_name = "photo_metadata.csv"
+        if self.photos:
+            parent_folder = os.path.basename(os.path.dirname(self.photos[0].filepath))
+            if parent_folder:
+                default_name = f"{parent_folder}.csv"
+
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export CSV", "photo_metadata.csv", "CSV Files (*.csv)"
+            self, "Export CSV", default_name, "CSV Files (*.csv)"
         )
         if not path:
             return
@@ -2920,6 +3038,98 @@ class PhotoScribe(QMainWindow):
         self.log(f"Exported CSV: {path}")
         self.status_label.setText(f"CSV exported to {path}")
 
+    def _import_csv(self):
+        """Import metadata from a previously exported CSV file."""
+        import csv
+
+        if not self.photos:
+            QMessageBox.information(
+                self, "Import CSV",
+                "Load photos first, then import a CSV to apply metadata to them."
+            )
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import CSV", "", "CSV Files (*.csv);;All Files (*)"
+        )
+        if not path:
+            return
+
+        # Read the CSV
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                csv_rows = list(reader)
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to read CSV:\n{e}")
+            return
+
+        if not csv_rows:
+            QMessageBox.information(self, "Import CSV", "CSV file is empty.")
+            return
+
+        # Build lookup of loaded photos by filepath and filename
+        by_filepath = {p.filepath: p for p in self.photos}
+        by_filename = {}
+        for p in self.photos:
+            if p.filename not in by_filename:
+                by_filename[p.filename] = p
+
+        matched = 0
+        unmatched = []
+
+        for row in csv_rows:
+            filepath = row.get("Filepath", "").strip()
+            filename = row.get("Filename", "").strip()
+            title = row.get("Title", "").strip()
+            caption = row.get("Caption", "").strip()
+            keywords_str = row.get("Keywords", "").strip()
+
+            # Parse keywords (semicolon or comma separated)
+            if ";" in keywords_str:
+                keywords = [k.strip() for k in keywords_str.split(";") if k.strip()]
+            else:
+                keywords = [k.strip() for k in keywords_str.split(",") if k.strip()]
+
+            # Match: try filepath first, then filename
+            photo = None
+            if filepath and filepath in by_filepath:
+                photo = by_filepath[filepath]
+            elif filename and filename in by_filename:
+                photo = by_filename[filename]
+
+            if photo:
+                photo.metadata = PhotoMetadata(
+                    title=title,
+                    caption=caption,
+                    keywords=keywords,
+                )
+                photo.status = "done"
+                matched += 1
+            else:
+                unmatched.append(filename or filepath or "(unknown)")
+
+        # Refresh UI
+        self._refresh_photo_table()
+        if matched > 0:
+            self._refresh_results_table()
+            self.write_btn.setEnabled(True)
+            self.export_btn.setEnabled(True)
+
+        # Show summary
+        msg = f"Imported metadata for {matched} of {len(csv_rows)} rows."
+        if unmatched:
+            msg += f"\n\n{len(unmatched)} rows could not be matched to loaded photos:\n"
+            for name in unmatched[:20]:
+                msg += f"  \u2022 {name}\n"
+            if len(unmatched) > 20:
+                msg += f"  ... and {len(unmatched) - 20} more\n"
+            msg += "\nThese rows were skipped. Only matched photos will be written."
+
+        QMessageBox.information(self, "Import CSV", msg)
+        self.log(f"CSV imported: {matched} matched, {len(unmatched)} unmatched")
+        self.status_label.setText(f"CSV imported: {matched} matched, {len(unmatched)} unmatched")
+
     # ── Keywords loading ──
 
     def _load_keywords(self):
@@ -2937,10 +3147,10 @@ class PhotoScribe(QMainWindow):
         except Exception as e:
             self.log(f"Error loading keywords: {e}")
 
-    # ── Prompt reset ──
+    # ── Prompt presets ──
 
-    def _reset_prompt(self):
-        self.prompt_edit.setText(
+    _BUILTIN_PRESETS = {
+        "Default": (
             "Analyse this photograph and generate metadata for it.\n\n"
             "Title: A concise, descriptive title (5-10 words).\n"
             "Caption: A detailed description of the scene, subjects, "
@@ -2948,7 +3158,400 @@ class PhotoScribe(QMainWindow):
             "Keywords: 10-20 relevant keywords for search and cataloguing, "
             "covering subject matter, location type, mood, colours, "
             "photographic style, and season where apparent."
+        ),
+        "Landscape": (
+            "Analyse this landscape photograph.\n\n"
+            "Title: A concise, evocative title (5-10 words).\n"
+            "Caption: Describe the scene, terrain, weather, light quality, "
+            "and mood (1-3 sentences).\n"
+            "Keywords: 15-20 keywords covering landscape type, geological "
+            "features, vegetation, sky conditions, season, time of day, "
+            "colours, and photographic style."
+        ),
+        "Event": (
+            "Analyse this event photograph.\n\n"
+            "Title: A descriptive title capturing the moment (5-10 words).\n"
+            "Caption: Describe the action, participants, setting, and "
+            "atmosphere (1-3 sentences).\n"
+            "Keywords: 15-20 keywords covering the event type, activities, "
+            "people, setting, mood, and photographic style."
+        ),
+        "Product": (
+            "Analyse this product photograph.\n\n"
+            "Title: A clear, descriptive title (5-10 words).\n"
+            "Caption: Describe the product, its features, styling, "
+            "and presentation (1-3 sentences).\n"
+            "Keywords: 15-20 keywords covering product type, features, "
+            "materials, colours, style, and use case."
+        ),
+    }
+
+    def _init_prompt_presets(self):
+        """Initialise the prompt preset combo box with built-in and saved presets."""
+        self._prompt_presets = dict(self._BUILTIN_PRESETS)
+
+        # Load user-saved presets from settings
+        raw = self.settings.value("prompt_presets", "{}")
+        try:
+            user_presets = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, TypeError):
+            user_presets = {}
+        self._prompt_presets.update(user_presets)
+        self._user_preset_names = set(user_presets.keys())
+
+        self._refresh_preset_combo()
+
+    def _refresh_preset_combo(self):
+        """Refresh the preset combo box contents."""
+        self.prompt_preset_combo.blockSignals(True)
+        current = self.prompt_preset_combo.currentText()
+        self.prompt_preset_combo.clear()
+
+        # Built-in presets first
+        for name in self._BUILTIN_PRESETS:
+            self.prompt_preset_combo.addItem(name)
+
+        # User presets after a separator
+        if self._user_preset_names:
+            self.prompt_preset_combo.insertSeparator(self.prompt_preset_combo.count())
+            for name in sorted(self._user_preset_names):
+                self.prompt_preset_combo.addItem(name)
+
+        # Restore selection
+        idx = self.prompt_preset_combo.findText(current)
+        if idx >= 0:
+            self.prompt_preset_combo.setCurrentIndex(idx)
+        self.prompt_preset_combo.blockSignals(False)
+
+    def _on_prompt_preset_selected(self, name: str):
+        """Handle preset selection change — auto-load into editor."""
+        if name and name in self._prompt_presets:
+            self.prompt_edit.setText(self._prompt_presets[name])
+
+    def _save_prompt_preset(self):
+        """Save the current prompt as a new named preset."""
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(
+            self, "Save Preset", "Preset name:",
         )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+
+        # Prevent overwriting built-in presets via Save As
+        if name in self._BUILTIN_PRESETS:
+            QMessageBox.warning(
+                self, "Cannot Save",
+                f"'{name}' is a built-in preset. Use 'Update' to modify it,\n"
+                f"or choose a different name."
+            )
+            return
+
+        self._prompt_presets[name] = self.prompt_edit.toPlainText()
+        self._user_preset_names.add(name)
+        self._save_user_presets()
+        self._refresh_preset_combo()
+        self.prompt_preset_combo.setCurrentText(name)
+        self.log(f"Saved preset: {name}")
+
+    def _overwrite_prompt_preset(self):
+        """Overwrite the currently selected preset with the current prompt text."""
+        name = self.prompt_preset_combo.currentText()
+        if not name:
+            return
+
+        reply = QMessageBox.question(
+            self, "Update Preset",
+            f"Overwrite preset '{name}' with the current prompt?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._prompt_presets[name] = self.prompt_edit.toPlainText()
+
+        # If it's a built-in preset being modified, save it as a user override
+        if name in self._BUILTIN_PRESETS:
+            self._user_preset_names.add(name)
+
+        self._save_user_presets()
+        self.log(f"Updated preset: {name}")
+
+    def _delete_prompt_preset(self):
+        """Delete the currently selected preset."""
+        name = self.prompt_preset_combo.currentText()
+        if not name:
+            return
+
+        if name in self._BUILTIN_PRESETS and name not in self._user_preset_names:
+            QMessageBox.information(
+                self, "Cannot Delete",
+                f"'{name}' is a built-in preset and cannot be deleted."
+            )
+            return
+
+        reply = QMessageBox.question(
+            self, "Delete Preset",
+            f"Delete preset '{name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._user_preset_names.discard(name)
+        # Restore built-in version if it was overridden
+        if name in self._BUILTIN_PRESETS:
+            self._prompt_presets[name] = self._BUILTIN_PRESETS[name]
+        else:
+            self._prompt_presets.pop(name, None)
+
+        self._save_user_presets()
+        self._refresh_preset_combo()
+        self.log(f"Deleted preset: {name}")
+
+    def _save_user_presets(self):
+        """Persist user presets to QSettings."""
+        user_presets = {
+            name: self._prompt_presets[name]
+            for name in self._user_preset_names
+            if name in self._prompt_presets
+        }
+        self.settings.setValue("prompt_presets", json.dumps(user_presets))
+
+    def _reset_prompt(self):
+        """Reset prompt to default."""
+        self.prompt_edit.setText(self._BUILTIN_PRESETS["Default"])
+        self.prompt_preset_combo.setCurrentText("Default")
+
+    # ── Model recommendation ──
+
+    def _detect_hardware(self) -> dict:
+        """Detect GPU VRAM and system RAM. Cross-platform."""
+        info = {"gpu_name": None, "vram_mb": None, "ram_mb": 0, "platform": "cpu_only"}
+
+        # System RAM
+        try:
+            if sys.platform == "win32":
+                # Try PowerShell first (wmic is deprecated/removed on Win11 24H2+)
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0 and result.stdout.strip().isdigit():
+                    info["ram_mb"] = int(result.stdout.strip()) // (1024 * 1024)
+                else:
+                    # Fallback to wmic for older Windows versions
+                    result = subprocess.run(
+                        ["wmic", "computersystem", "get", "TotalPhysicalMemory", "/value"],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    for line in result.stdout.strip().split("\n"):
+                        if "TotalPhysicalMemory=" in line:
+                            info["ram_mb"] = int(line.split("=")[1].strip()) // (1024 * 1024)
+            elif sys.platform == "darwin":
+                result = subprocess.run(
+                    ["sysctl", "-n", "hw.memsize"],
+                    capture_output=True, text=True, timeout=5
+                )
+                info["ram_mb"] = int(result.stdout.strip()) // (1024 * 1024)
+            else:
+                with open("/proc/meminfo") as f:
+                    for line in f:
+                        if line.startswith("MemTotal:"):
+                            info["ram_mb"] = int(line.split()[1]) // 1024
+                            break
+        except Exception:
+            pass
+
+        # NVIDIA GPU
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                best_name, best_vram = None, 0
+                for line in result.stdout.strip().split("\n"):
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 2:
+                        try:
+                            vram = int(parts[1])
+                            if vram > best_vram:
+                                best_vram = vram
+                                best_name = parts[0]
+                        except ValueError:
+                            pass
+                if best_name:
+                    info["gpu_name"] = best_name
+                    info["vram_mb"] = best_vram
+                    info["platform"] = "nvidia"
+                    return info
+        except Exception:
+            pass
+
+        # Apple Silicon (shared memory)
+        if sys.platform == "darwin":
+            try:
+                result = subprocess.run(
+                    ["sysctl", "-n", "machdep.cpu.brand_string"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if "Apple" in result.stdout:
+                    info["platform"] = "apple_silicon"
+                    info["gpu_name"] = "Apple Silicon (shared memory)"
+                    info["vram_mb"] = int(info["ram_mb"] * 0.7)
+            except Exception:
+                pass
+
+        return info
+
+    def _get_model_recommendation(self, info: dict) -> dict:
+        """Recommend best model based on hardware."""
+        vram = info.get("vram_mb") or 0
+        ram = info.get("ram_mb") or 0
+        effective = vram if vram > 0 else ram
+
+        if effective >= 28000:
+            return {"model": "gemma3:27b", "lm_studio": "gemma-3-27b-it",
+                    "desc": "Gemma 3 27B \u2014 best quality", "size": "~17GB download",
+                    "pull": "ollama pull gemma3:27b"}
+        elif effective >= 14000:
+            return {"model": "gemma3:12b", "lm_studio": "gemma-3-12b-it",
+                    "desc": "Gemma 3 12B \u2014 great quality/speed balance", "size": "~8GB download",
+                    "pull": "ollama pull gemma3:12b"}
+        elif effective >= 6000:
+            return {"model": "gemma3:4b", "lm_studio": "gemma-3-4b-it",
+                    "desc": "Gemma 3 4B \u2014 lightweight, still solid", "size": "~3GB download",
+                    "pull": "ollama pull gemma3:4b"}
+        else:
+            return {"model": "gemma3:4b", "lm_studio": "gemma-3-4b-it",
+                    "desc": "Gemma 3 4B \u2014 smallest option", "size": "~3GB download",
+                    "pull": "ollama pull gemma3:4b"}
+
+    def _recommend_model(self):
+        """Detect hardware and show recommendation."""
+        self.log("Detecting hardware...")
+        info = self._detect_hardware()
+
+        hw_lines = []
+        if info["gpu_name"]:
+            hw_lines.append(f"GPU: {info['gpu_name']}")
+        if info["vram_mb"]:
+            hw_lines.append(f"VRAM: {info['vram_mb'] / 1024:.1f} GB")
+        if info["ram_mb"]:
+            hw_lines.append(f"System RAM: {info['ram_mb'] / 1024:.1f} GB")
+        if not info["gpu_name"]:
+            hw_lines.append("GPU: None detected (will use system RAM)")
+        hw_summary = "\n".join(hw_lines)
+        self.log(f"Hardware: " + "; ".join(hw_lines))
+
+        rec = self._get_model_recommendation(info)
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Model Recommendation")
+        msg.setIcon(QMessageBox.Information)
+        msg.setText(f"Detected Hardware:\n{hw_summary}")
+
+        backend = getattr(self, "backend", "ollama")
+        if backend == "openai":
+            # LM Studio user
+            msg.setInformativeText(
+                f"Recommended: {rec['desc']}\n{rec['size']}\n\n"
+                f"In LM Studio, go to the Discover tab and search for:\n"
+                f"  {rec['lm_studio']}\n\n"
+                f"Download a Q4_K_M quantized version for best results."
+            )
+            msg.addButton("OK", QMessageBox.AcceptRole)
+        else:
+            # Ollama user
+            msg.setInformativeText(
+                f"Recommended: {rec['desc']}\n{rec['size']}\n\n"
+                f"Command: {rec['pull']}\n\n"
+                f"Click 'Pull Model' to download now, or 'Copy Command' to run manually."
+            )
+            pull_btn = msg.addButton("Pull Model", QMessageBox.AcceptRole)
+            copy_btn = msg.addButton("Copy Command", QMessageBox.ActionRole)
+            msg.addButton("Close", QMessageBox.RejectRole)
+
+        msg.exec()
+
+        if backend != "openai":
+            if msg.clickedButton() == pull_btn:
+                self._pull_model(rec["pull"])
+            elif msg.clickedButton() == copy_btn:
+                QApplication.clipboard().setText(rec["pull"])
+                self.status_label.setText("Pull command copied to clipboard")
+
+    def _pull_model(self, command: str):
+        """Pull model via Ollama with progress."""
+        model_name = command.replace("ollama pull ", "").strip()
+        self.log(f"Pulling model: {model_name}...")
+        self.model_download_widget.setVisible(True)
+        self.model_download_label.setText(f"Downloading {model_name}...")
+        self.model_download_label.setStyleSheet(
+            "font-size: 14px; font-weight: 600; color: #e8a23a; border: none;"
+        )
+        self.model_download_progress.setValue(0)
+
+        class PullThread(QThread):
+            progress_update = Signal(int)
+            finished = Signal(str)
+
+            def run(self_thread):
+                try:
+                    proc = subprocess.Popen(
+                        command.split(),
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, encoding="utf-8", errors="replace", bufsize=1,
+                    )
+                    last_pct = 0
+                    for line in iter(proc.stdout.readline, ""):
+                        pct_match = re.search(r"(\d+)%", line)
+                        if pct_match:
+                            pct = int(pct_match.group(1))
+                            if pct != last_pct:
+                                last_pct = pct
+                                self_thread.progress_update.emit(pct)
+                    proc.wait()
+                    if proc.returncode == 0:
+                        self_thread.finished.emit(f"Model {model_name} downloaded successfully!")
+                    else:
+                        self_thread.finished.emit(f"Error (exit code {proc.returncode})")
+                except FileNotFoundError:
+                    self_thread.finished.emit("Ollama not found. Install from ollama.com")
+                except Exception as e:
+                    self_thread.finished.emit(f"Error: {e}")
+
+        self._pull_thread = PullThread()
+        self._pull_thread.progress_update.connect(self._on_pull_progress)
+        self._pull_thread.finished.connect(self._on_pull_finished)
+        self._pull_thread.start()
+
+    def _on_pull_progress(self, percent: int):
+        self.model_download_progress.setValue(percent)
+        self.model_download_label.setText(f"Downloading... {percent}%")
+
+    def _on_pull_finished(self, message: str):
+        self.log(message)
+        if "successfully" in message:
+            self.model_download_progress.setValue(100)
+            self.model_download_label.setText(message)
+            self.model_download_label.setStyleSheet(
+                "font-size: 14px; font-weight: 600; color: #27ae60; border: none;"
+            )
+            QTimer.singleShot(1000, self._refresh_models)
+            QTimer.singleShot(8000, lambda: self.model_download_widget.setVisible(False))
+        else:
+            self.model_download_label.setText(message)
+            self.model_download_label.setStyleSheet(
+                "font-size: 14px; font-weight: 600; color: #c0392b; border: none;"
+            )
+        # Clean up thread reference safely
+        QTimer.singleShot(2000, lambda: setattr(self, '_pull_thread', None))
 
 
 # ─────────────────────────────────────────────────────────
