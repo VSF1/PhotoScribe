@@ -4,8 +4,6 @@ AI-powered photo metadata generator that runs entirely on your Mac or Windows PC
 
 **No cloud. No subscription. No data leaves your machine.**
 
-![PhotoScribe Screenshot](screenshot.png)
-
 ---
 
 ## What you need
