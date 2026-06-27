@@ -714,24 +714,37 @@ class MetadataWriter:
 
     @staticmethod
     def read_existing_metadata(filepath):
-        """Read existing title, caption, keywords from file."""
+        """Read existing title, caption, keywords across IPTC, XMP and EXIF.
+
+        Checking all carriers (not just IPTC) means the skip/append logic works
+        regardless of where the existing tool stored them — e.g. Photo Mechanic
+        and Lightroom often write the caption to XMP dc:description, not just
+        IPTC:Caption-Abstract.
+        """
         try:
             exiftool = MetadataWriter.find_exiftool() or "exiftool"
             result = subprocess.run(
-                [exiftool, "-j", "-IPTC:ObjectName",
-                 "-IPTC:Caption-Abstract", "-IPTC:Keywords", filepath],
+                [exiftool, "-j",
+                 "-IPTC:ObjectName", "-XMP:Title",
+                 "-IPTC:Caption-Abstract", "-XMP:Description", "-EXIF:ImageDescription",
+                 "-IPTC:Keywords", "-XMP:Subject",
+                 filepath],
                 capture_output=True, text=True, timeout=15
             )
             if result.returncode == 0:
                 data = json.loads(result.stdout)
                 if data:
                     entry = data[0]
-                    title = entry.get("ObjectName", "")
-                    caption = entry.get("Caption-Abstract", "")
-                    keywords = entry.get("Keywords", [])
+                    title = entry.get("ObjectName") or entry.get("Title") or ""
+                    caption = (entry.get("Caption-Abstract")
+                               or entry.get("Description")
+                               or entry.get("ImageDescription") or "")
+                    keywords = entry.get("Keywords")
+                    if not keywords:
+                        keywords = entry.get("Subject") or []
                     if isinstance(keywords, str):
                         keywords = [keywords]
-                    return title or "", caption or "", keywords or []
+                    return str(title), str(caption), keywords or []
         except Exception:
             pass
         return "", "", []
