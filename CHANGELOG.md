@@ -2,6 +2,11 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.3.1] — 2026-06-24
+
+### Fixed
+- **"Skip title/caption if file already has them" no longer overwrites existing captions.** The check only looked at the IPTC caption field; captions stored in XMP (`dc:description`) or EXIF — as Photo Mechanic and Lightroom write them — went undetected and were overwritten. It now coalesces title, caption, and keywords across IPTC, XMP, and EXIF.
+
 ## [1.3.0] — 2026-06-24
 
 A big feature release, with substantial community contributions from
