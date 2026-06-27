@@ -2,6 +2,11 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.3.2] — 2026-06-28
+
+### Fixed
+- **RAW files: skip-existing (and append-keywords) now work for XMP sidecars.** The sidecar writer ignored both options and always overwrote, so existing captions on RAW files (e.g. from Photo Mechanic) were replaced even with "skip if already present" turned on. It now reads the existing sidecar and honours skip/append like the embedded path. Follow-up to 1.3.1, which only covered embedded JPEG/TIFF metadata.
+
 ## [1.3.1] — 2026-06-24
 
 ### Fixed

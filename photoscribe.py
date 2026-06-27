@@ -756,7 +756,9 @@ class MetadataWriter:
         """Write title, caption, keywords to file (or XMP sidecar) via exiftool."""
         p = Path(filepath)
         if use_sidecar and p.suffix.lower() in RAW_EXTENSIONS:
-            return MetadataWriter._write_sidecar(p, metadata, adobe_naming=adobe_naming)
+            return MetadataWriter._write_sidecar(
+                p, metadata, adobe_naming=adobe_naming,
+                skip_existing=skip_existing, append_keywords=append_keywords)
 
         exiftool = MetadataWriter.find_exiftool() or "exiftool"
         args = [exiftool]
@@ -816,19 +818,49 @@ class MetadataWriter:
         return True
 
     @staticmethod
-    def _write_sidecar(raw_path: Path, metadata: PhotoMetadata, adobe_naming=False):
-        """Write metadata to an XMP sidecar alongside the RAW file."""
+    def _write_sidecar(raw_path: Path, metadata: PhotoMetadata, adobe_naming=False,
+                       skip_existing=False, append_keywords=False):
+        """Write metadata to an XMP sidecar alongside the RAW file.
+
+        Honours skip_existing and append_keywords the same way the embedded
+        path does, reading what's already in the sidecar so existing captions
+        (e.g. from Photo Mechanic) aren't overwritten.
+        """
         exiftool = MetadataWriter.find_exiftool() or "exiftool"
         xmp_path = raw_path.with_suffix(".xmp") if adobe_naming else Path(str(raw_path) + ".xmp")
-        args = [
-            exiftool,
-            "-overwrite_original",
-            f"-XMP-dc:Title={metadata.title}",
-            f"-XMP-dc:Description={metadata.caption}",
-            "-XMP-dc:Subject=",
-        ]
-        for kw in metadata.keywords:
-            args.append(f"-XMP-dc:Subject+={kw}")
+
+        existing_title, existing_caption, existing_keywords = "", "", []
+        if (skip_existing or append_keywords) and xmp_path.exists():
+            existing_title, existing_caption, existing_keywords = \
+                MetadataWriter.read_existing_metadata(str(xmp_path))
+
+        args = [exiftool, "-overwrite_original"]
+
+        if not (skip_existing and existing_title):
+            args.append(f"-XMP-dc:Title={metadata.title}")
+        if not (skip_existing and existing_caption):
+            args.append(f"-XMP-dc:Description={metadata.caption}")
+
+        if append_keywords:
+            existing_lower = {k.lower() for k in existing_keywords}
+            for kw in metadata.keywords:
+                if kw.lower() not in existing_lower:
+                    args.append(f"-XMP-dc:Subject+={kw}")
+        else:
+            # Replace: clear existing keywords in a separate pass first — a
+            # single "-Subject= ... +=" pass doesn't reliably clear a list tag
+            # on an existing sidecar (matches the embedded path's two-pass).
+            if xmp_path.exists():
+                subprocess.run(
+                    [exiftool, "-overwrite_original", "-XMP-dc:Subject=", str(xmp_path)],
+                    capture_output=True, text=True, timeout=15
+                )
+            for kw in metadata.keywords:
+                args.append(f"-XMP-dc:Subject+={kw}")
+
+        # Nothing left to write (everything skipped) — leave the sidecar as-is
+        if len(args) <= 2:
+            return True
 
         if xmp_path.exists():
             args.append(str(xmp_path))
