@@ -55,7 +55,7 @@ check_python_version() {
 }
 
 # Try specific versions first (prefer newest compatible)
-for v in 3.13 3.12 3.11 3.10; do
+for v in "3.13" "3.12" "3.11" "3.10"; do
     if check_python_version "python$v"; then
         break
     fi
