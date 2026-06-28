@@ -12,6 +12,7 @@ build/
 .idea/
 *.swp
 *.swo
+.build_venv/
 
 # macOS
 .DS_Store
