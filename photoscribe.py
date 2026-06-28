@@ -2360,6 +2360,15 @@ class PhotoScribe(QMainWindow):
         self._file_loader = None
 
     def _clear_all(self):
+        # Delete this folder's resume file first — it's keyed off the first
+        # photo's directory, so we have to do it before dropping the list.
+        progress_file = self._get_progress_filepath()
+        if progress_file and os.path.isfile(progress_file):
+            try:
+                os.remove(progress_file)
+                self.log("Cleared saved progress for this folder")
+            except Exception:
+                pass
         self.photos.clear()
         self.folder_name_label.setText("")
         self._current_result_index = -1
