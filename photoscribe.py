@@ -3447,11 +3447,11 @@ class PhotoScribe(QMainWindow):
                             info["ram_mb"] = int(line.split()[1]) // 1024
                             break
         except Exception:
-            pass
+            info["ram_mb"] = None # Ensure it's explicitly None on failure
 
         # NVIDIA GPU
         try:
-            result = subprocess.run(
+            result = subprocess.run( #
                 ["nvidia-smi", "--query-gpu=name,memory.total",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=10
@@ -3474,7 +3474,7 @@ class PhotoScribe(QMainWindow):
                     info["platform"] = "nvidia"
                     return info
         except Exception:
-            pass
+            info["vram_mb"] = None # Ensure it's explicitly None on failure
 
         # Apple Silicon (shared memory)
         if sys.platform == "darwin":
@@ -3485,10 +3485,10 @@ class PhotoScribe(QMainWindow):
                 )
                 if "Apple" in result.stdout:
                     info["platform"] = "apple_silicon"
-                    info["gpu_name"] = "Apple Silicon (shared memory)"
-                    info["vram_mb"] = int(info["ram_mb"] * 0.7)
+                    info["gpu_name"] = "Apple Silicon (unified memory)"
+                    info["vram_mb"] = int((info["ram_mb"] or 0) * 0.7) # Use 70% of RAM as effective VRAM
             except Exception:
-                pass
+                info["vram_mb"] = None # Ensure it's explicitly None on failure
 
         return info
 
@@ -3522,11 +3522,11 @@ class PhotoScribe(QMainWindow):
 
         hw_lines = []
         if info["gpu_name"]:
-            hw_lines.append(f"GPU: {info['gpu_name']}")
+            hw_lines.append(f"GPU: {str(info['gpu_name'])}")
         if info["vram_mb"]:
-            hw_lines.append(f"VRAM: {info['vram_mb'] / 1024:.1f} GB")
+            hw_lines.append(f"VRAM: {float(info['vram_mb']) / 1024:.1f} GB")
         if info["ram_mb"]:
-            hw_lines.append(f"System RAM: {info['ram_mb'] / 1024:.1f} GB")
+            hw_lines.append(f"System RAM: {float(info['ram_mb']) / 1024:.1f} GB")
         if not info["gpu_name"]:
             hw_lines.append("GPU: None detected (will use system RAM)")
         hw_summary = "\n".join(hw_lines)
@@ -3578,34 +3578,45 @@ class PhotoScribe(QMainWindow):
         self.model_download_label.setStyleSheet(
             "font-size: 14px; font-weight: 600; color: #e8a23a; border: none;"
         )
+        self.model_download_progress.setMaximum(100)
         self.model_download_progress.setValue(0)
 
         class PullThread(QThread):
-            progress_update = Signal(int)
+            progress_update = Signal(int, int) # completed, total
             finished = Signal(str)
 
             def run(self_thread):
+                url = self.ollama_url.text().rstrip("/")
+                api_key = self.api_key_edit.text()
+                headers = {"Content-Type": "application/json"}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+
                 try:
-                    proc = subprocess.Popen(
-                        command.split(),
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        text=True, encoding="utf-8", errors="replace", bufsize=1,
+                    resp = requests.post(
+                        f"{url}/api/pull",
+                        headers=headers,
+                        json={"model": model_name, "stream": True},
+                        stream=True,
+                        timeout=(10, 600) # 10s connect, 10m read
                     )
-                    last_pct = 0
-                    for line in iter(proc.stdout.readline, ""):
-                        pct_match = re.search(r"(\d+)%", line)
-                        if pct_match:
-                            pct = int(pct_match.group(1))
-                            if pct != last_pct:
-                                last_pct = pct
-                                self_thread.progress_update.emit(pct)
-                    proc.wait()
-                    if proc.returncode == 0:
-                        self_thread.finished.emit(f"Model {model_name} downloaded successfully!")
-                    else:
-                        self_thread.finished.emit(f"Error (exit code {proc.returncode})")
-                except FileNotFoundError:
-                    self_thread.finished.emit("Ollama not found. Install from ollama.com")
+                    resp.raise_for_status()
+
+                    for line in resp.iter_lines():
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                            if "total" in data and "completed" in data:
+                                self_thread.progress_update.emit(data["completed"], data["total"])
+                            if data.get("status") == "success":
+                                self_thread.finished.emit(f"Model {model_name} downloaded successfully!")
+                                return
+                        except json.JSONDecodeError:
+                            continue # Ignore non-json lines
+                    self_thread.finished.emit(f"Download finished for {model_name}.")
+                except requests.exceptions.RequestException as e:
+                    self_thread.finished.emit(f"Connection error: {e}")
                 except Exception as e:
                     self_thread.finished.emit(f"Error: {e}")
 
@@ -3614,13 +3625,18 @@ class PhotoScribe(QMainWindow):
         self._pull_thread.finished.connect(self._on_pull_finished)
         self._pull_thread.start()
 
-    def _on_pull_progress(self, percent: int):
-        self.model_download_progress.setValue(percent)
-        self.model_download_label.setText(f"Downloading... {percent}%")
+    def _on_pull_progress(self, completed: int, total: int):
+        if total > 0:
+            percent = int((completed / total) * 100)
+            self.model_download_progress.setMaximum(total)
+            self.model_download_progress.setValue(completed)
+            self.model_download_label.setText(f"Downloading... {percent}%")
 
     def _on_pull_finished(self, message: str):
         self.log(message)
         if "successfully" in message:
+            # Set to 100% on success, as the final 'success' message has no numbers
+            self.model_download_progress.setMaximum(100)
             self.model_download_progress.setValue(100)
             self.model_download_label.setText(message)
             self.model_download_label.setStyleSheet(
