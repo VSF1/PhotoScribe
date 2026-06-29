@@ -2005,7 +2005,7 @@ class PhotoScribe(QMainWindow):
 
         # Photo preview
         self.detail_preview = QLabel()
-        self.detail_preview.setFixedHeight(200)
+        self.detail_preview.setFixedHeight(380)
         self.detail_preview.setAlignment(Qt.AlignCenter)
         self.detail_preview.setStyleSheet(
             "background-color: #1a1a1e; border: 1px solid #2a2a30; "
@@ -2187,6 +2187,9 @@ class PhotoScribe(QMainWindow):
         self.sidecar_naming_combo.setCurrentIndex(int(sidecar_naming))
         response_length = self.settings.value("response_length", "1")
         self.response_length_combo.setCurrentIndex(int(response_length))
+        keywords_vocab = self.settings.value("keywords_vocab", "")
+        if keywords_vocab:
+            self.keywords_edit.setPlainText(keywords_vocab)
         self._load_folder_presets()
 
     def _save_settings(self):
@@ -2215,6 +2218,7 @@ class PhotoScribe(QMainWindow):
             "photographer",
             self.context_fields["ctx_photographer"].text()
         )
+        self.settings.setValue("keywords_vocab", self.keywords_edit.toPlainText())
         self._save_folder_presets()
 
     def closeEvent(self, event):
@@ -2954,7 +2958,7 @@ class PhotoScribe(QMainWindow):
                 img = Image.open(filepath)
             if img.mode != "RGB":
                 img = img.convert("RGB")
-            max_w, max_h = 400, 200
+            max_w, max_h = 720, 380
             ratio = min(max_w / img.width, max_h / img.height)
             if ratio < 1:
                 new_size = (int(img.width * ratio), int(img.height * ratio))

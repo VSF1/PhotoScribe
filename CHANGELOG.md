@@ -2,6 +2,15 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.3.3] — 2026-06-28
+
+### Added
+- **The keyword vocabulary now persists** between sessions — paste it once and it's there next launch.
+
+### Changed
+- **Larger photo preview** in the Results tab (roughly double), so it's actually useful for reviewing before writing.
+- **Clear All** now also deletes the folder's saved-progress file, so repeated test runs start clean without hunting down a hidden file.
+
 ## [1.3.2] — 2026-06-28
 
 ### Fixed
