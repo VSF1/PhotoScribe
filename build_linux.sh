@@ -173,7 +173,7 @@ EOF
         --vendor "Andy Hutchinson" \
         --url "https://github.com/repomonkey/PhotoScribe" \
         --description "AI-powered photo metadata generator that runs entirely on your PC. No cloud, no subscription." \
-        "PhotoScribe/=/opt/photoscribe/"
+        "PhotoScribe/=/opt/photoscribe"
 
     PACKAGE_FILE=$(find dist/ -name "photoscribe*.${PKG_TYPE}" -print -quit)
     echo -e "${GREEN}✓${NC} Package created: $PACKAGE_FILE"
