@@ -308,8 +308,9 @@ class OllamaWorker(QThread):
     log_message = Signal(str)
 
     def __init__(self, photos, model, prompt, context, ollama_url,
-                 api_key=None, keywords_list=None, backend="ollama", max_tokens=2048,
-                 describe_people=True):
+                 api_key=None, keywords_list=None, backend="ollama",
+                 max_tokens=2048, describe_people=True, use_face_tags=True, timeout=180,
+                 image_size=1024):
         super().__init__()
         self.photos = photos
         self.model = model
@@ -321,6 +322,9 @@ class OllamaWorker(QThread):
         self.backend = backend  # "ollama" or "openai"
         self.max_tokens = max_tokens
         self.describe_people = describe_people
+        self.use_face_tags = use_face_tags
+        self.timeout = timeout
+        self.image_size = image_size
         self._cancelled = False
         self.batch_total_time = 0.0
         self.batch_processed = 0
@@ -368,10 +372,9 @@ class OllamaWorker(QThread):
                 img = Image.open(filepath)
                 img = img.convert("RGB")
 
-            # Resize to max 1024px on longest side for efficiency
-            max_dim = 1024
-            if max(img.size) > max_dim:
-                ratio = max_dim / max(img.size)
+            # Resize to configured max dimension on longest side
+            if max(img.size) > self.image_size:
+                ratio = self.image_size / max(img.size)
                 new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
                 img = img.resize(new_size, Image.BILINEAR)
             buffer = BytesIO()
@@ -380,12 +383,20 @@ class OllamaWorker(QThread):
         except Exception as e:
             raise RuntimeError(f"Failed to load image: {e}")
 
-    def _build_prompt(self):
+    def _build_prompt(self, face_tags=None):
         """Construct the full prompt with context."""
         parts = []
 
         if self.context.strip():
             parts.append(f"Context for this photo: {self.context.strip()}")
+
+        if face_tags:
+            names = ", ".join(face_tags)
+            parts.append(
+                "Note: This photo contains people tagged as: "
+                f"{names}. Use these names where appropriate in the "
+                "caption and include them in the keywords."
+            )
 
         parts.append(self.prompt.strip())
 
@@ -413,7 +424,7 @@ class OllamaWorker(QThread):
         )
         return "\n\n".join(parts)
 
-    def _clean_keywords(self, raw):
+    def _clean_keywords(self, raw, extra_keywords=None):
         """Normalise the model's keywords.
 
         - Snap to the user's exact vocabulary spelling: if a generated keyword
@@ -425,7 +436,8 @@ class OllamaWorker(QThread):
         """
         canon = {v.strip().lower(): v.strip()
                  for v in self.keywords_list if v and v.strip()}
-        out, seen = [], set()
+        all_kws = (extra_keywords or []) + raw
+        out, seen = [], set() #
         for kw in raw:
             kw = (kw or "").strip()
             if not kw:
@@ -436,6 +448,12 @@ class OllamaWorker(QThread):
                 continue
             seen.add(key)
             out.append(final)
+        # Add extra keywords (like face tags) if they aren't already present
+        if extra_keywords:
+            for kw in extra_keywords:
+                if kw.lower() not in seen:
+                    seen.add(kw.lower())
+                    out.append(kw)
         return out
 
     def _call_ollama(self, img_b64, full_prompt):
@@ -468,7 +486,7 @@ class OllamaWorker(QThread):
             f"{self.ollama_url}/api/chat",
             json=payload,
             headers=headers,
-            timeout=180
+            timeout=self.timeout
         )
         resp.raise_for_status()
         return resp.json().get("message", {}).get("content", "")
@@ -505,7 +523,7 @@ class OllamaWorker(QThread):
             f"{self.ollama_url}/v1/chat/completions",
             json=payload,
             headers=headers,
-            timeout=180
+            timeout=self.timeout
         )
         resp.raise_for_status()
         msg = resp.json()["choices"][0]["message"]
@@ -515,7 +533,6 @@ class OllamaWorker(QThread):
     def run(self):
         from concurrent.futures import ThreadPoolExecutor
 
-        full_prompt = self._build_prompt()
         call_fn = self._call_openai if self.backend == "openai" else self._call_ollama
 
         # Build list of pending photo indices
@@ -569,6 +586,13 @@ class OllamaWorker(QThread):
                     photo_start = time.monotonic()
                     self.log_message.emit(f"Sending to {self.model}...")
 
+                    # Read face tags if enabled
+                    face_tags = []
+                    if self.use_face_tags:
+                        face_tags = MetadataWriter.read_face_tags(photo.filepath)
+
+                    full_prompt = self._build_prompt(face_tags=face_tags)
+
                     # Call the model, retrying once if it returns nothing usable.
                     meta = None
                     last_reason = "no response"
@@ -607,7 +631,7 @@ class OllamaWorker(QThread):
                         meta = PhotoMetadata(
                             title=data.get("title", "").strip(),
                             caption=data.get("caption", "").strip(),
-                            keywords=self._clean_keywords(data.get("keywords", []))
+                            keywords=self._clean_keywords(data.get("keywords", []), extra_keywords=face_tags)
                         )
                         break
 
@@ -759,6 +783,40 @@ class MetadataWriter:
         except Exception:
             pass
         return "", "", []
+
+    @staticmethod
+    def read_face_tags(filepath: str) -> list[str]:
+        """Read person names from XMP face regions (mwg-rs)."""
+        exiftool = MetadataWriter.find_exiftool()
+        if not exiftool:
+            return []
+        try:
+            # -struct is crucial to get the structured data for regions
+            result = subprocess.run(
+                [exiftool, "-j", "-struct", "-XMP-mwg-rs:Regions", filepath],
+                capture_output=True, text=True, timeout=10, errors="replace"
+            )
+            if result.returncode != 0:
+                return []
+            data = json.loads(result.stdout)
+            if not data:
+                return []
+            regions_data = data[0].get("Regions")
+            if not regions_data:
+                return []
+            # Regions can be a single dict or a list of dicts
+            region_list = regions_data.get("RegionList", [])
+            if not isinstance(region_list, list):
+                region_list = [region_list]
+            names = []
+            for region in region_list:
+                if isinstance(region, dict):
+                    name = region.get("Name")
+                    if name and isinstance(name, str) and name.strip():
+                        names.append(name.strip())
+            return list(dict.fromkeys(names))  # Deduplicate
+        except Exception:
+            return []
 
     @staticmethod
     def write_metadata(filepath, metadata: PhotoMetadata, backup=True,
@@ -1631,6 +1689,13 @@ class PhotoScribe(QMainWindow):
         self.api_key_edit.setEchoMode(QLineEdit.Password)
         model_layout.addWidget(self.api_key_edit, 2, 1, 1, 3)
 
+        model_layout.addWidget(QLabel("Timeout (s):"), 3, 0)
+        self.timeout_spinbox = QSpinBox()
+        self.timeout_spinbox.setRange(30, 1800)
+        self.timeout_spinbox.setValue(180)
+        self.timeout_spinbox.setToolTip("Timeout in seconds for waiting for a response from the AI model.")
+        model_layout.addWidget(self.timeout_spinbox, 3, 1)
+
         model_layout.setColumnStretch(1, 1)
 
         settings_layout.addWidget(model_group)
@@ -1798,11 +1863,21 @@ class PhotoScribe(QMainWindow):
         self.dedup_keywords_check.setChecked(True)
         checks_grid.addWidget(self.dedup_keywords_check, 2, 0)
 
+        self.face_tags_check = QCheckBox(
+            "Incorporate existing face tags (from XMP)"
+        )
+        self.face_tags_check.setChecked(True)
+        self.face_tags_check.setToolTip(
+            "Reads person names from face tags written by other software\n"
+            "(e.g. Lightroom, digiKam) and adds them to the context and keywords."
+        )
+        checks_grid.addWidget(self.face_tags_check, 2, 1)
+
         self.exif_date_fallback_check = QCheckBox(
             "Use EXIF date as fallback when folder date not detected"
         )
         self.exif_date_fallback_check.setChecked(True)
-        checks_grid.addWidget(self.exif_date_fallback_check, 2, 1)
+        checks_grid.addWidget(self.exif_date_fallback_check, 3, 0)
 
         self.gps_lookup_check = QCheckBox(
             "Look up location from GPS coordinates (requires internet)"
@@ -1814,13 +1889,13 @@ class PhotoScribe(QMainWindow):
             "This makes an external network request. Off by default."
         )
         self.gps_lookup_check.toggled.connect(self._on_gps_lookup_toggled)
-        checks_grid.addWidget(self.gps_lookup_check, 3, 0)
+        checks_grid.addWidget(self.gps_lookup_check, 3, 1)
 
         self.sidecar_check = QCheckBox(
             "Write to XMP sidecar for RAW files"
         )
         self.sidecar_check.setChecked(True)
-        checks_grid.addWidget(self.sidecar_check, 3, 1)
+        checks_grid.addWidget(self.sidecar_check, 4, 0)
 
         options_layout.addLayout(checks_grid)
 
@@ -1841,6 +1916,22 @@ class PhotoScribe(QMainWindow):
         options_layout.addLayout(sidecar_naming_row)
         self.sidecar_check.toggled.connect(self.sidecar_naming_combo.setEnabled)
         self.sidecar_check.toggled.connect(sidecar_naming_label.setEnabled)
+
+        image_size_row = QHBoxLayout()
+        image_size_label = QLabel("Image detail level:")
+        image_size_label.setStyleSheet("color: #a0a0a0; font-size: 12px;")
+        image_size_label.setFixedWidth(110)
+        image_size_row.addWidget(image_size_label)
+        self.image_size_combo = QComboBox()
+        self.image_size_combo.addItems([
+            "Low (512px)", "Standard (1024px)", "High (2048px)"
+        ])
+        self.image_size_combo.setCurrentIndex(1)
+        self.image_size_combo.setToolTip("Controls the size of the image sent to the AI.\nHigher detail may improve results but is slower.")
+        self.image_size_combo.setFixedWidth(200)
+        image_size_row.addWidget(self.image_size_combo)
+        image_size_row.addStretch()
+        options_layout.addLayout(image_size_row)
 
         response_length_row = QHBoxLayout()
         response_length_label = QLabel("Keyword density:")
@@ -2169,6 +2260,8 @@ class PhotoScribe(QMainWindow):
         api_key = self.settings.value("api_key", "")
         if api_key:
             self.api_key_edit.setText(api_key)
+        timeout = self.settings.value("timeout", "180")
+        self.timeout_spinbox.setValue(int(timeout))
         prompt = self.settings.value("prompt", "")
         if prompt:
             self.prompt_edit.setText(prompt)
@@ -2183,8 +2276,12 @@ class PhotoScribe(QMainWindow):
         self.skip_existing_check.setChecked(skip_existing == "true")
         sidecar = self.settings.value("use_sidecar", "true")
         self.sidecar_check.setChecked(sidecar == "true")
+        face_tags = self.settings.value("use_face_tags", "true")
+        self.face_tags_check.setChecked(face_tags == "true")
         sidecar_naming = self.settings.value("sidecar_naming", "0")
         self.sidecar_naming_combo.setCurrentIndex(int(sidecar_naming))
+        image_size = self.settings.value("image_size", "1")
+        self.image_size_combo.setCurrentIndex(int(image_size))
         response_length = self.settings.value("response_length", "1")
         self.response_length_combo.setCurrentIndex(int(response_length))
         keywords_vocab = self.settings.value("keywords_vocab", "")
@@ -2195,6 +2292,7 @@ class PhotoScribe(QMainWindow):
     def _save_settings(self):
         self.settings.setValue("ollama_url", self.ollama_url.text())
         self.settings.setValue("api_key", self.api_key_edit.text())
+        self.settings.setValue("timeout", self.timeout_spinbox.value())
         self.settings.setValue("prompt", self.prompt_edit.toPlainText())
         self.settings.setValue(
             "create_backup",
@@ -2212,7 +2310,12 @@ class PhotoScribe(QMainWindow):
             "use_sidecar",
             "true" if self.sidecar_check.isChecked() else "false"
         )
+        self.settings.setValue(
+            "use_face_tags",
+            "true" if self.face_tags_check.isChecked() else "false"
+        )
         self.settings.setValue("sidecar_naming", str(self.sidecar_naming_combo.currentIndex()))
+        self.settings.setValue("image_size", str(self.image_size_combo.currentIndex()))
         self.settings.setValue("response_length", str(self.response_length_combo.currentIndex()))
         self.settings.setValue(
             "photographer",
@@ -2806,6 +2909,7 @@ class PhotoScribe(QMainWindow):
         self.progress_bar.setValue(0)
 
         max_tokens_map = {0: 1024, 1: 2048, 2: 4096}
+        image_size_map = {0: 512, 1: 1024, 2: 2048}
         self.worker = OllamaWorker(
             photos=self.photos,
             model=self.model_combo.currentText(),
@@ -2817,6 +2921,9 @@ class PhotoScribe(QMainWindow):
             backend=getattr(self, "backend", "ollama"),
             max_tokens=max_tokens_map.get(self.response_length_combo.currentIndex(), 512),
             describe_people=self.describe_people_check.isChecked(),
+            use_face_tags=self.face_tags_check.isChecked(),
+            timeout=self.timeout_spinbox.value(),
+            image_size=image_size_map.get(self.image_size_combo.currentIndex(), 1024),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.result.connect(self._on_result)
@@ -3586,7 +3693,7 @@ class PhotoScribe(QMainWindow):
         self.model_download_progress.setValue(0)
 
         class PullThread(QThread):
-            progress_update = Signal(int, int) # completed, total
+            progress_update = Signal(float, float) # completed, total
             finished = Signal(str)
 
             def run(self_thread):
@@ -3612,7 +3719,10 @@ class PhotoScribe(QMainWindow):
                         try:
                             data = json.loads(line)
                             if "total" in data and "completed" in data:
-                                self_thread.progress_update.emit(data["completed"], data["total"])
+                                self_thread.progress_update.emit(
+                                    float(data["completed"]),
+                                    float(data["total"])
+                                )
                             if data.get("status") == "success":
                                 self_thread.finished.emit(f"Model {model_name} downloaded successfully!")
                                 return
@@ -3629,16 +3739,25 @@ class PhotoScribe(QMainWindow):
         self._pull_thread.finished.connect(self._on_pull_finished)
         self._pull_thread.start()
 
-    def _on_pull_progress(self, completed: int, total: int):
+    def _on_pull_progress(self, completed: float, total: float):
+        C_INT_MAX = 2**31 - 1
         if total > 0:
             percent = int((completed / total) * 100)
-            self.model_download_progress.setMaximum(total)
-            self.model_download_progress.setValue(completed)
+            if total > C_INT_MAX:
+                # Scale values to fit within a large integer range to prevent overflow
+                # QProgressBar is limited to 32-bit signed integers.
+                scaled_max = 1_000_000
+                scaled_completed = int((completed / total) * scaled_max)
+                self.model_download_progress.setMaximum(scaled_max)
+                self.model_download_progress.setValue(scaled_completed)
+            else:
+                self.model_download_progress.setMaximum(int(total))
+                self.model_download_progress.setValue(int(completed))
             self.model_download_label.setText(f"Downloading... {percent}%")
 
     def _on_pull_finished(self, message: str):
         self.log(message)
-        if "successfully" in message:
+        if "successfully" in message or "finished" in message:
             # Set to 100% on success, as the final 'success' message has no numbers
             self.model_download_progress.setMaximum(100)
             self.model_download_progress.setValue(100)
