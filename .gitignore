@@ -13,6 +13,7 @@ build/
 *.swp
 *.swo
 .build_venv/
+.build_venv_linux/
 
 # macOS
 .DS_Store

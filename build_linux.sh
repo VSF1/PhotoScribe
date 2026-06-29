@@ -113,7 +113,7 @@ else
 fi
 
 # ── Set up build venv ──
-BUILD_VENV="$SCRIPT_DIR/.build_venv"
+BUILD_VENV="$SCRIPT_DIR/.build_venv_linux"
 if [ ! -d "$BUILD_VENV" ]; then
     echo "Creating build environment..."
     $PYTHON -m venv "$BUILD_VENV"
