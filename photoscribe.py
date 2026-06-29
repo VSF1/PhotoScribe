@@ -1986,7 +1986,7 @@ class PhotoScribe(QMainWindow):
 
         # Photo preview
         self.detail_preview = QLabel()
-        self.detail_preview.setFixedHeight(200)
+        self.detail_preview.setFixedHeight(380)
         self.detail_preview.setAlignment(Qt.AlignCenter)
         self.detail_preview.setStyleSheet(
             "background-color: #1a1a1e; border: 1px solid #2a2a30; "
@@ -2929,7 +2929,7 @@ class PhotoScribe(QMainWindow):
                 img = Image.open(filepath)
             if img.mode != "RGB":
                 img = img.convert("RGB")
-            max_w, max_h = 400, 200
+            max_w, max_h = 720, 380
             ratio = min(max_w / img.width, max_h / img.height)
             if ratio < 1:
                 new_size = (int(img.width * ratio), int(img.height * ratio))
