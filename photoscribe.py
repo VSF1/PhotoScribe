@@ -308,7 +308,7 @@ class OllamaWorker(QThread):
     log_message = Signal(str)
 
     def __init__(self, photos, model, prompt, context, ollama_url,
-                 keywords_list=None, backend="ollama", max_tokens=2048,
+                 api_key=None, keywords_list=None, backend="ollama", max_tokens=2048,
                  describe_people=True):
         super().__init__()
         self.photos = photos
@@ -316,6 +316,7 @@ class OllamaWorker(QThread):
         self.prompt = prompt
         self.context = context
         self.ollama_url = ollama_url
+        self.api_key = api_key
         self.keywords_list = keywords_list or []
         self.backend = backend  # "ollama" or "openai"
         self.max_tokens = max_tokens
@@ -439,6 +440,10 @@ class OllamaWorker(QThread):
 
     def _call_ollama(self, img_b64, full_prompt):
         """Ollama /api/chat format."""
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
         payload = {
             "model": self.model,
             "messages": [
@@ -462,6 +467,7 @@ class OllamaWorker(QThread):
         resp = requests.post(
             f"{self.ollama_url}/api/chat",
             json=payload,
+            headers=headers,
             timeout=180
         )
         resp.raise_for_status()
@@ -469,6 +475,10 @@ class OllamaWorker(QThread):
 
     def _call_openai(self, img_b64, full_prompt):
         """LM Studio / OpenAI-compatible chat format with vision."""
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
         payload = {
             "model": self.model,
             "messages": [
@@ -494,6 +504,7 @@ class OllamaWorker(QThread):
         resp = requests.post(
             f"{self.ollama_url}/v1/chat/completions",
             json=payload,
+            headers=headers,
             timeout=180
         )
         resp.raise_for_status()
@@ -851,10 +862,12 @@ class MetadataWriter:
             # single "-Subject= ... +=" pass doesn't reliably clear a list tag
             # on an existing sidecar (matches the embedded path's two-pass).
             if xmp_path.exists():
-                subprocess.run(
-                    [exiftool, "-overwrite_original", "-XMP-dc:Subject=", str(xmp_path)],
-                    capture_output=True, text=True, timeout=15
-                )
+                clear_args = [exiftool, "-overwrite_original", "-XMP-dc:Subject=", str(xmp_path)]
+            else:
+                # Create an empty sidecar from the raw file if it doesn't exist
+                clear_args = [exiftool, "-overwrite_original", "-tagsfromfile", str(raw_path), "-XMP-dc:Subject=", "-o", str(xmp_path)]
+
+            subprocess.run(clear_args, capture_output=True, text=True, timeout=15)
             for kw in metadata.keywords:
                 args.append(f"-XMP-dc:Subject+={kw}")
 
@@ -1588,31 +1601,37 @@ class PhotoScribe(QMainWindow):
 
         # Model selection
         model_group = QGroupBox("Model")
-        model_layout = QHBoxLayout(model_group)
+        model_layout = QGridLayout(model_group)
+        model_layout.setSpacing(8)
+
         self.model_combo = QComboBox()
         self.model_combo.setMinimumWidth(200)
-        model_layout.addWidget(self.model_combo)
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.setFixedWidth(80)
-        refresh_btn.clicked.connect(self._refresh_models)
-        model_layout.addWidget(refresh_btn)
-        model_layout.addStretch()
+        model_layout.addWidget(self.model_combo, 0, 0, 1, 2)
 
-        # Ollama URL
-        model_layout.addWidget(QLabel("URL:"))
-        self.ollama_url = QLineEdit("http://localhost:1234")
-        self.ollama_url.setFixedWidth(220)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_models)
+        model_layout.addWidget(refresh_btn, 0, 2)
+
+        recommend_btn = QPushButton("Recommend Model")
+        recommend_btn.setToolTip("Detect your GPU/RAM and recommend the best model")
+        recommend_btn.clicked.connect(self._recommend_model)
+        model_layout.addWidget(recommend_btn, 0, 3)
+
+        model_layout.addWidget(QLabel("URL:"), 1, 0)
+        self.ollama_url = QLineEdit("http://localhost:11434")
         self.ollama_url.setToolTip(
             "LM Studio: http://localhost:1234 (default)\n"
             "Ollama: http://localhost:11434"
         )
-        model_layout.addWidget(self.ollama_url)
+        model_layout.addWidget(self.ollama_url, 1, 1, 1, 3)
 
-        recommend_btn = QPushButton("Recommend Model")
-        recommend_btn.setFixedWidth(160)
-        recommend_btn.setToolTip("Detect your GPU/RAM and recommend the best model")
-        recommend_btn.clicked.connect(self._recommend_model)
-        model_layout.addWidget(recommend_btn)
+        model_layout.addWidget(QLabel("API Key:"), 2, 0)
+        self.api_key_edit = QLineEdit()
+        self.api_key_edit.setPlaceholderText("Optional, for remote/hosted models")
+        self.api_key_edit.setEchoMode(QLineEdit.Password)
+        model_layout.addWidget(self.api_key_edit, 2, 1, 1, 3)
+
+        model_layout.setColumnStretch(1, 1)
 
         settings_layout.addWidget(model_group)
 
@@ -2142,11 +2161,14 @@ class PhotoScribe(QMainWindow):
     # ── Settings persistence ──
 
     def _load_settings(self):
-        url = self.settings.value("ollama_url", "http://localhost:1234")
+        url = self.settings.value("ollama_url", "http://localhost:11434")
         # Migrate anyone who accidentally saved the wrong default
         if not url:
             url = "http://localhost:11434"
         self.ollama_url.setText(url)
+        api_key = self.settings.value("api_key", "")
+        if api_key:
+            self.api_key_edit.setText(api_key)
         prompt = self.settings.value("prompt", "")
         if prompt:
             self.prompt_edit.setText(prompt)
@@ -2169,6 +2191,7 @@ class PhotoScribe(QMainWindow):
 
     def _save_settings(self):
         self.settings.setValue("ollama_url", self.ollama_url.text())
+        self.settings.setValue("api_key", self.api_key_edit.text())
         self.settings.setValue("prompt", self.prompt_edit.toPlainText())
         self.settings.setValue(
             "create_backup",
@@ -2213,6 +2236,7 @@ class PhotoScribe(QMainWindow):
 
     def _refresh_models(self):
         url = self.ollama_url.text().rstrip("/")
+        api_key = self.api_key_edit.text()
         self.backend = "ollama"  # default; overridden below if OpenAI API detected
 
         model_names = []
@@ -2224,9 +2248,13 @@ class PhotoScribe(QMainWindow):
 
         def _probe(probe_url):
             """Try Ollama then OpenAI-compatible API at probe_url."""
+            headers = {}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
             # Ollama
             try:
-                resp = requests.get(f"{probe_url}/api/tags", timeout=3)
+                resp = requests.get(f"{probe_url}/api/tags", timeout=3, headers=headers)
                 resp.raise_for_status()
                 names = [m["name"] for m in resp.json().get("models", [])]
                 if names:
@@ -2235,7 +2263,7 @@ class PhotoScribe(QMainWindow):
                 pass
             # OpenAI-compatible (LM Studio, Jan, etc.)
             try:
-                resp = requests.get(f"{probe_url}/v1/models", timeout=3)
+                resp = requests.get(f"{probe_url}/v1/models", timeout=3, headers=headers)
                 resp.raise_for_status()
                 SKIP = ("embed", "rerank", "whisper", "tts", "dall-e")
                 names = [
@@ -2780,6 +2808,7 @@ class PhotoScribe(QMainWindow):
             prompt=self.prompt_edit.toPlainText(),
             context=self._get_context_string(),
             ollama_url=self.ollama_url.text().rstrip("/"),
+            api_key=self.api_key_edit.text(),
             keywords_list=self._get_keywords_list(),
             backend=getattr(self, "backend", "ollama"),
             max_tokens=max_tokens_map.get(self.response_length_combo.currentIndex(), 512),
