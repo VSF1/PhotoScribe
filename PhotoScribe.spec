@@ -151,7 +151,7 @@ app = BUNDLE(
     name='PhotoScribe.app',
     icon='PhotoScribe.icns',
     bundle_identifier='com.photoscribe.app',
-    version='1.3.2',
+    version='1.3.3',
     info_plist={
         'NSPrincipalClass': 'NSApplication',
         'NSAppleScriptEnabled': False,
