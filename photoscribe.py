@@ -2165,6 +2165,9 @@ class PhotoScribe(QMainWindow):
         self.sidecar_naming_combo.setCurrentIndex(int(sidecar_naming))
         response_length = self.settings.value("response_length", "1")
         self.response_length_combo.setCurrentIndex(int(response_length))
+        keywords_vocab = self.settings.value("keywords_vocab", "")
+        if keywords_vocab:
+            self.keywords_edit.setPlainText(keywords_vocab)
         self._load_folder_presets()
 
     def _save_settings(self):
@@ -2192,6 +2195,7 @@ class PhotoScribe(QMainWindow):
             "photographer",
             self.context_fields["ctx_photographer"].text()
         )
+        self.settings.setValue("keywords_vocab", self.keywords_edit.toPlainText())
         self._save_folder_presets()
 
     def closeEvent(self, event):
