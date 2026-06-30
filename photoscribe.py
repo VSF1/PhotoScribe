@@ -1926,6 +1926,14 @@ class PhotoScribe(QMainWindow):
         self.gps_lookup_check.toggled.connect(self._on_gps_lookup_toggled)
         checks_grid.addWidget(self.gps_lookup_check, 3, 1)
 
+        self.gps_overwrite_check = QCheckBox(
+            "Overwrite existing location with GPS data"
+        )
+        self.gps_overwrite_check.setChecked(False)
+        self.gps_overwrite_check.setEnabled(False)
+        self.gps_lookup_check.toggled.connect(self.gps_overwrite_check.setEnabled)
+        checks_grid.addWidget(self.gps_overwrite_check, 4, 1)
+
         self.sidecar_check = QCheckBox(
             "Write to XMP sidecar for RAW files"
         )
@@ -1942,7 +1950,7 @@ class PhotoScribe(QMainWindow):
             "Honours your backup/append/skip options below."
         )
         checks_grid.addWidget(self.auto_write_check, 4, 1)
-
+        checks_grid.addWidget(self.auto_write_check, 5, 1)
         options_layout.addLayout(checks_grid)
 
         sidecar_naming_row = QHBoxLayout()
@@ -2297,12 +2305,14 @@ class PhotoScribe(QMainWindow):
 
     def _on_url_changed(self, text: str):
         """Disable model recommender if URL is not local."""
-        is_local = "localhost" in text or "127.0.0.1" in text
-        self.recommend_btn.setEnabled(is_local)
-        self.recommend_btn.setToolTip(
-            "Detect your GPU/RAM and recommend the best model" if is_local
-            else "Hardware detection is only available for local servers"
-        )
+        if "localhost" in text or "127.0.0.1" in text:
+            self.recommend_btn.setText("Recommend Model")
+            self.recommend_btn.setToolTip("Detect your GPU/RAM and recommend the best model")
+        else:
+            self.recommend_btn.setText("Suggest Models")
+            self.recommend_btn.setToolTip("Show a list of recommended models to install on your remote server")
+        self.recommend_btn.setEnabled(True)
+
     # ── Settings persistence ──
 
     def _load_settings(self):
@@ -2330,6 +2340,8 @@ class PhotoScribe(QMainWindow):
         self.skip_existing_check.setChecked(skip_existing == "true")
         auto_write = self.settings.value("auto_write", "false")
         self.auto_write_check.setChecked(auto_write == "true")
+        gps_overwrite = self.settings.value("gps_overwrite", "false")
+        self.gps_overwrite_check.setChecked(gps_overwrite == "true")
         sidecar = self.settings.value("use_sidecar", "true")
         self.sidecar_check.setChecked(sidecar == "true")
         face_tags = self.settings.value("use_face_tags", "true")
@@ -2365,6 +2377,10 @@ class PhotoScribe(QMainWindow):
         self.settings.setValue(
             "auto_write",
             "true" if self.auto_write_check.isChecked() else "false"
+        )
+        self.settings.setValue(
+            "gps_overwrite",
+            "true" if self.gps_overwrite_check.isChecked() else "false"
         )
         self.settings.setValue(
             "use_sidecar",
@@ -2746,7 +2762,7 @@ class PhotoScribe(QMainWindow):
         # GPS reverse-geocode (opt-in, makes external request)
         if self.gps_lookup_check.isChecked():
             location_field = self.context_fields["ctx_location"]
-            if not location_field.text():
+            if not location_field.text() or self.gps_overwrite_check.isChecked():
                 for fp in filepaths[:5]:
                     coords = read_gps_coordinates(fp)
                     if coords:
@@ -3696,6 +3712,48 @@ class PhotoScribe(QMainWindow):
 
         return info
 
+    _RECOMMENDED_MODELS = [
+        {"model": "gemma3:27b", "lm_studio": "gemma-3-27b-it",
+         "desc": "Gemma 3 27B — best quality", "size": "~17GB VRAM",
+         "pull": "ollama pull gemma3:27b"},
+        {"model": "gemma3:12b", "lm_studio": "gemma-3-12b-it",
+         "desc": "Gemma 3 12B — great quality/speed balance", "size": "~8GB VRAM",
+         "pull": "ollama pull gemma3:12b"},
+        {"model": "gemma3:4b", "lm_studio": "gemma-3-4b-it",
+         "desc": "Gemma 3 4B — lightweight, still solid", "size": "~3GB VRAM",
+         "pull": "ollama pull gemma3:4b"}
+    ]
+
+    def _show_remote_model_suggestions(self):
+        """Show a dialog with general model suggestions for a remote server."""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Model Suggestions")
+        msg.setIcon(QMessageBox.Information)
+        msg.setText("Recommended models for your remote Ollama server:")
+
+        # Create a detailed layout for the message box
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        for i, rec in enumerate(self._RECOMMENDED_MODELS):
+            label = QLabel(f"<b>{rec['desc']}</b><br><span style='color:#888;'>{rec['size']}</span>")
+            grid.addWidget(label, i, 0)
+
+            pull_btn = QPushButton(f"Pull {rec['model']}")
+            pull_btn.clicked.connect(lambda _, cmd=rec['pull']: self._pull_model(cmd))
+            grid.addWidget(pull_btn, i, 1)
+
+            copy_btn = QPushButton("Copy Command")
+            copy_btn.clicked.connect(lambda _, cmd=rec['pull']: QApplication.clipboard().setText(cmd))
+            grid.addWidget(copy_btn, i, 2)
+
+        # The standard QMessageBox doesn't support custom layouts well, so we
+        # create a dummy widget to hold our layout and set it on the box.
+        dummy_widget = QWidget()
+        dummy_widget.setLayout(grid)
+        msg.layout().addWidget(dummy_widget, 1, 1, 1, msg.layout().columnCount())
+        msg.addButton("Close", QMessageBox.RejectRole)
+        msg.exec()
+
     def _get_model_recommendation(self, info: dict) -> dict:
         """Recommend best model based on hardware."""
         vram = info.get("vram_mb") or 0
@@ -3703,25 +3761,22 @@ class PhotoScribe(QMainWindow):
         effective = vram if vram > 0 else ram
 
         if effective >= 28000:
-            return {"model": "gemma3:27b", "lm_studio": "gemma-3-27b-it",
-                    "desc": "Gemma 3 27B \u2014 best quality", "size": "~17GB download",
-                    "pull": "ollama pull gemma3:27b"}
+            return self._RECOMMENDED_MODELS[0]
         elif effective >= 14000:
-            return {"model": "gemma3:12b", "lm_studio": "gemma-3-12b-it",
-                    "desc": "Gemma 3 12B \u2014 great quality/speed balance", "size": "~8GB download",
-                    "pull": "ollama pull gemma3:12b"}
+            return self._RECOMMENDED_MODELS[1]
         elif effective >= 6000:
-            return {"model": "gemma3:4b", "lm_studio": "gemma-3-4b-it",
-                    "desc": "Gemma 3 4B \u2014 lightweight, still solid", "size": "~3GB download",
-                    "pull": "ollama pull gemma3:4b"}
+            return self._RECOMMENDED_MODELS[2]
         else:
-            return {"model": "gemma3:4b", "lm_studio": "gemma-3-4b-it",
-                    "desc": "Gemma 3 4B \u2014 smallest option", "size": "~3GB download",
-                    "pull": "ollama pull gemma3:4b"}
+            return self._RECOMMENDED_MODELS[2]
 
     def _recommend_model(self):
         """Detect hardware and show recommendation."""
         self.log("Detecting hardware...")
+        is_local = "localhost" in self.ollama_url.text() or "127.0.0.1" in self.ollama_url.text()
+        if not is_local:
+            self._show_remote_model_suggestions()
+            return
+
         info = self._detect_hardware()
 
         hw_lines = []
@@ -3747,7 +3802,7 @@ class PhotoScribe(QMainWindow):
         if backend == "openai":
             # LM Studio user
             msg.setInformativeText(
-                f"Recommended: {rec['desc']}\n{rec['size']}\n\n"
+                f"Recommended: {rec['desc']}\n{rec['size'].replace('VRAM', 'download')}\n\n"
                 f"In LM Studio, go to the Discover tab and search for:\n"
                 f"  {rec['lm_studio']}\n\n"
                 f"Download a Q4_K_M quantized version for best results."
@@ -3756,7 +3811,7 @@ class PhotoScribe(QMainWindow):
         else:
             # Ollama user
             msg.setInformativeText(
-                f"Recommended: {rec['desc']}\n{rec['size']}\n\n"
+                f"Recommended: {rec['desc']}\n{rec['size'].replace('VRAM', 'download')}\n\n"
                 f"Command: {rec['pull']}\n\n"
                 f"Click 'Pull Model' to download now, or 'Copy Command' to run manually."
             )
