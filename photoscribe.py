@@ -340,7 +340,7 @@ class OllamaWorker(QThread):
     log_message = Signal(str)
 
     def __init__(self, photos, model, prompt, context, ollama_url,
-                 api_key=None, keywords_list=None, backend="ollama",
+                 api_key=None, keywords_list=None, backend="openai",
                  max_tokens=2048, describe_people=True, use_face_tags=True, timeout=180,
                  image_size=1024):
         super().__init__()
@@ -351,7 +351,7 @@ class OllamaWorker(QThread):
         self.ollama_url = ollama_url
         self.api_key = api_key
         self.keywords_list = keywords_list or []
-        self.backend = backend  # "ollama" or "openai"
+        self.backend = backend
         self.max_tokens = max_tokens
         self.describe_people = describe_people
         self.use_face_tags = use_face_tags
@@ -565,7 +565,10 @@ class OllamaWorker(QThread):
     def run(self):
         from concurrent.futures import ThreadPoolExecutor
 
-        call_fn = self._call_openai if self.backend == "openai" else self._call_ollama
+        if self.backend == "ollama":
+            call_fn = self._call_ollama
+        else: # openai or openai_api
+            call_fn = self._call_openai
 
         # Build list of pending photo indices
         pending = [(i, photo) for i, photo in enumerate(self.photos)
@@ -1696,40 +1699,51 @@ class PhotoScribe(QMainWindow):
         model_layout = QGridLayout(model_group)
         model_layout.setSpacing(8)
 
-        self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(200)
-        model_layout.addWidget(self.model_combo, 0, 0, 1, 2)
+        model_layout.addWidget(QLabel("Backend:"), 0, 0)
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["Ollama", "LM Studio / Other", "OpenAI API"])
+        self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        model_layout.addWidget(self.backend_combo, 0, 1)
 
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(self._refresh_models)
-        model_layout.addWidget(refresh_btn, 0, 2)
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self._refresh_models)
+        model_layout.addWidget(self.refresh_btn, 0, 2)
 
         self.recommend_btn = QPushButton("Recommend Model")
         self.recommend_btn.setToolTip("Detect your GPU/RAM and recommend the best model")
         self.recommend_btn.clicked.connect(self._recommend_model)
         model_layout.addWidget(self.recommend_btn, 0, 3)
 
-        model_layout.addWidget(QLabel("URL:"), 1, 0)
+        model_layout.addWidget(QLabel("Model:"), 1, 0)
+        self.model_combo = QComboBox()
+        self.model_combo.setMinimumWidth(200)
+        self.model_combo.setEditable(False)
+        model_layout.addWidget(self.model_combo, 1, 1, 1, 3)
+
+        self.url_label = QLabel("URL:")
+        model_layout.addWidget(self.url_label, 2, 0)
         self.ollama_url = QLineEdit("http://localhost:11434")
         self.ollama_url.setToolTip(
             "LM Studio: http://localhost:1234 (default)\n"
             "Ollama: http://localhost:11434"
         )
         self.ollama_url.textChanged.connect(self._on_url_changed)
-        model_layout.addWidget(self.ollama_url, 1, 1, 1, 3)
+        model_layout.addWidget(self.ollama_url, 2, 1, 1, 3)
 
-        model_layout.addWidget(QLabel("API Key:"), 2, 0)
+        self.api_key_label = QLabel("API Key:")
+        model_layout.addWidget(self.api_key_label, 3, 0)
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setPlaceholderText("Optional, for remote/hosted models")
         self.api_key_edit.setEchoMode(QLineEdit.Password)
-        model_layout.addWidget(self.api_key_edit, 2, 1, 1, 3)
+        model_layout.addWidget(self.api_key_edit, 3, 1, 1, 3)
 
-        model_layout.addWidget(QLabel("Timeout (s):"), 3, 0)
+        self.timeout_label = QLabel("Timeout (s):")
+        model_layout.addWidget(self.timeout_label, 4, 0)
         self.timeout_spinbox = QSpinBox()
         self.timeout_spinbox.setRange(30, 1800)
         self.timeout_spinbox.setValue(180)
         self.timeout_spinbox.setToolTip("Timeout in seconds for waiting for a response from the AI model.")
-        model_layout.addWidget(self.timeout_spinbox, 3, 1)
+        model_layout.addWidget(self.timeout_spinbox, 4, 1)
 
         model_layout.setColumnStretch(1, 1)
 
@@ -1932,13 +1946,13 @@ class PhotoScribe(QMainWindow):
         self.gps_overwrite_check.setChecked(False)
         self.gps_overwrite_check.setEnabled(False)
         self.gps_lookup_check.toggled.connect(self.gps_overwrite_check.setEnabled)
-        checks_grid.addWidget(self.gps_overwrite_check, 4, 1)
+        checks_grid.addWidget(self.gps_overwrite_check, 4, 0)
 
         self.sidecar_check = QCheckBox(
             "Write to XMP sidecar for RAW files"
         )
         self.sidecar_check.setChecked(True)
-        checks_grid.addWidget(self.sidecar_check, 4, 0)
+        checks_grid.addWidget(self.sidecar_check, 4, 1)
 
         self.auto_write_check = QCheckBox(
             "Write to files automatically after generating"
@@ -1949,8 +1963,7 @@ class PhotoScribe(QMainWindow):
             "finishes — useful for leaving a large folder to run unattended.\n"
             "Honours your backup/append/skip options below."
         )
-        checks_grid.addWidget(self.auto_write_check, 4, 1)
-        checks_grid.addWidget(self.auto_write_check, 5, 1)
+        checks_grid.addWidget(self.auto_write_check, 5, 0)
         options_layout.addLayout(checks_grid)
 
         sidecar_naming_row = QHBoxLayout()
@@ -2303,6 +2316,41 @@ class PhotoScribe(QMainWindow):
         # Kick off model check
         QTimer.singleShot(500, self._refresh_models)
 
+    def _on_backend_changed(self, index):
+        """Reconfigure UI when backend is switched."""
+        # 0: Ollama, 1: LM Studio, 2: OpenAI API
+        is_openai_api = (index == 2)
+
+        self.ollama_url.setReadOnly(is_openai_api)
+        self.refresh_btn.setVisible(not is_openai_api)
+        self.recommend_btn.setVisible(not is_openai_api)
+        self.model_combo.setEditable(False) # Always false for now
+
+        if is_openai_api:
+            self.ollama_url.setText("https://api.openai.com")
+            self.api_key_edit.setPlaceholderText("Required for OpenAI API")
+            self.api_key_label.setText("API Key:*")
+            self.model_combo.clear()
+            self.model_combo.addItems([
+                "gpt-4o", "gpt-4-turbo", "gpt-4o-mini"
+            ])
+            self.ollama_status.setText("● OpenAI API")
+            self.ollama_status.setStyleSheet("color: #27ae60; font-size: 12px;")
+        else:
+            self.api_key_edit.setPlaceholderText("Optional, for remote/hosted models")
+            self.api_key_label.setText("API Key:")
+            if index == 0: # Ollama
+                self.ollama_url.setText("http://localhost:11434")
+            else: # LM Studio
+                self.ollama_url.setText("http://localhost:1234")
+            # Trigger a refresh to discover models for the new backend
+            QTimer.singleShot(100, self._refresh_models)
+
+        # Persist the choice
+        backend_map = {0: "ollama", 1: "openai", 2: "openai_api"}
+        self.backend = backend_map.get(index, "ollama")
+        self.settings.setValue("backend", self.backend)
+
     def _on_url_changed(self, text: str):
         """Disable model recommender if URL is not local."""
         if "localhost" in text or "127.0.0.1" in text:
@@ -2316,6 +2364,12 @@ class PhotoScribe(QMainWindow):
     # ── Settings persistence ──
 
     def _load_settings(self):
+        backend = self.settings.value("backend", "ollama")
+        backend_map = {"ollama": 0, "openai": 1, "openai_api": 2}
+        backend_idx = backend_map.get(backend, 0)
+        self.backend_combo.setCurrentIndex(backend_idx)
+        self._on_backend_changed(backend_idx) # Apply UI changes, but don't refresh models yet
+
         url = self.settings.value("ollama_url", "http://localhost:11434")
         # Migrate anyone who accidentally saved the wrong default
         if not url:
@@ -2362,6 +2416,7 @@ class PhotoScribe(QMainWindow):
         self.settings.setValue("api_key", self.api_key_edit.text())
         self.settings.setValue("timeout", self.timeout_spinbox.value())
         self.settings.setValue("prompt", self.prompt_edit.toPlainText())
+        self.settings.setValue("backend", self.backend)
         self.settings.setValue(
             "create_backup",
             "true" if self.backup_check.isChecked() else "false"
@@ -2420,7 +2475,10 @@ class PhotoScribe(QMainWindow):
     def _refresh_models(self):
         url = self.ollama_url.text().rstrip("/")
         api_key = self.api_key_edit.text()
-        self.backend = "ollama"  # default; overridden below if OpenAI API detected
+
+        # OpenAI API has a fixed list, no discovery needed
+        if self.backend == "openai_api":
+            return
 
         model_names = []
         backend_label = ""
@@ -2441,7 +2499,7 @@ class PhotoScribe(QMainWindow):
                 resp.raise_for_status()
                 names = [m["name"] for m in resp.json().get("models", [])]
                 if names:
-                    return names, "ollama", "Ollama"
+                    return names, "Ollama"
             except Exception:
                 pass
             # OpenAI-compatible (LM Studio, Jan, etc.)
@@ -2455,28 +2513,26 @@ class PhotoScribe(QMainWindow):
                     and not any(s in m["id"].lower() for s in SKIP)
                 ]
                 if names:
-                    return names, "openai", "LM Studio"
+                    return names, "LM Studio"
             except Exception:
                 pass
-            return [], None, ""
+            return [], ""
 
         # Try configured URL first
-        model_names, backend, backend_label = _probe(url)
+        model_names, backend_label = _probe(url)
 
         # If that failed, silently try known fallback URLs
         if not model_names:
             for fallback in FALLBACK_URLS:
                 if fallback.rstrip("/") == url:
                     continue
-                model_names, backend, backend_label = _probe(fallback)
+                model_names, backend_label = _probe(fallback)
                 if model_names:
                     connected_url = fallback
                     self.ollama_url.setText(fallback)
                     break
 
         self._on_url_changed(self.ollama_url.text())
-        if backend:
-            self.backend = backend
 
         if model_names:
             # Sort: prefer gemma models first, then alphabetical
@@ -2993,7 +3049,7 @@ class PhotoScribe(QMainWindow):
             prompt=self.prompt_edit.toPlainText(),
             context=self._get_context_string(),
             ollama_url=self.ollama_url.text().rstrip("/"),
-            api_key=self.api_key_edit.text(),
+            api_key=self.api_key_edit.text() or os.environ.get("OPENAI_API_KEY"),
             keywords_list=self._get_keywords_list(),
             backend=getattr(self, "backend", "ollama"),
             max_tokens=max_tokens_map.get(self.response_length_combo.currentIndex(), 512),
@@ -3798,8 +3854,7 @@ class PhotoScribe(QMainWindow):
         msg.setIcon(QMessageBox.Information)
         msg.setText(f"Detected Hardware:\n{hw_summary}")
 
-        backend = getattr(self, "backend", "ollama")
-        if backend == "openai":
+        if self.backend == "openai":
             # LM Studio user
             msg.setInformativeText(
                 f"Recommended: {rec['desc']}\n{rec['size'].replace('VRAM', 'download')}\n\n"
@@ -3821,7 +3876,7 @@ class PhotoScribe(QMainWindow):
 
         msg.exec()
 
-        if backend != "openai":
+        if self.backend == "ollama":
             if msg.clickedButton() == pull_btn:
                 self._pull_model(rec["pull"])
             elif msg.clickedButton() == copy_btn:
