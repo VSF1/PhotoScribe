@@ -38,6 +38,29 @@ try:
     HAS_HEIF = True
 except ImportError:
     HAS_HEIF = False
+
+
+# On Windows, each child process (exiftool, etc.) would pop a console window
+# that steals focus from whatever you're doing. These wrappers suppress it;
+# on other platforms creationflags=0 is a harmless no-op.
+_real_run = subprocess.run
+_real_popen = subprocess.Popen
+
+
+def _run(*args, **kwargs):
+    if sys.platform == "win32":
+        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+    return _real_run(*args, **kwargs)
+
+
+def _popen(*args, **kwargs):
+    if sys.platform == "win32":
+        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+    return _real_popen(*args, **kwargs)
+
+
+# Single source of truth for the app version (the build reads this too).
+APP_VERSION = "1.3.4"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -74,6 +97,15 @@ RAW_EXTENSIONS = {
     ".dng", ".pef", ".srw", ".x3f", ".3fr", ".mrw", ".nrw",
     ".raw", ".sr2", ".srf", ".erf",
 }
+
+
+def _is_supported_file(path) -> bool:
+    """True for a real, supported image — excludes macOS AppleDouble stubs
+    (._foo) and hidden dotfiles, which carry image extensions but aren't photos."""
+    name = os.path.basename(path)
+    if name.startswith("."):
+        return False
+    return Path(path).suffix.lower() in SUPPORTED_EXTENSIONS
 
 # ─────────────────────────────────────────────────────────
 # Folder context detection
@@ -188,7 +220,7 @@ def read_exif_date(filepath: str) -> Optional[str]:
     if not exiftool:
         return None
     try:
-        result = subprocess.run(
+        result = _run(
             [exiftool, "-j", "-DateTimeOriginal", filepath],
             capture_output=True, text=True, timeout=10
         )
@@ -221,7 +253,7 @@ def read_gps_coordinates(filepath: str) -> Optional[tuple]:
     if not exiftool:
         return None
     try:
-        result = subprocess.run(
+        result = _run(
             [exiftool, "-j", "-n", "-GPSLatitude", "-GPSLongitude", filepath],
             capture_output=True, text=True, timeout=10
         )
@@ -758,7 +790,7 @@ class MetadataWriter:
         """
         try:
             exiftool = MetadataWriter.find_exiftool() or "exiftool"
-            result = subprocess.run(
+            result = _run(
                 [exiftool, "-j",
                  "-IPTC:ObjectName", "-XMP:Title",
                  "-IPTC:Caption-Abstract", "-XMP:Description", "-EXIF:ImageDescription",
@@ -872,7 +904,7 @@ class MetadataWriter:
                 "-XMP:Subject=",
                 filepath
             ])
-            subprocess.run(clear_args, capture_output=True, text=True, timeout=15)
+            _run(clear_args, capture_output=True, text=True, timeout=15)
 
             # Now add the new keywords
             for kw in metadata.keywords:
@@ -881,7 +913,7 @@ class MetadataWriter:
 
         args.append(filepath)
 
-        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        result = _run(args, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             raise RuntimeError(f"exiftool error: {result.stderr}")
         return True
@@ -938,7 +970,7 @@ class MetadataWriter:
         else:
             args.extend(["-o", str(xmp_path), str(raw_path)])
 
-        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        result = _run(args, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             raise RuntimeError(f"exiftool sidecar error: {result.stderr}")
         return True
@@ -970,7 +1002,7 @@ class MetadataWriter:
         # Process regular items in batch mode
         if regular_items:
             try:
-                proc = subprocess.Popen(
+                proc = _popen(
                     [exiftool, "-stay_open", "True", "-@", "-"],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
@@ -1433,13 +1465,13 @@ class DropZone(QFrame):
         files = []
         for url in urls:
             path = url.toLocalFile()
-            if os.path.isfile(path) and Path(path).suffix.lower() in SUPPORTED_EXTENSIONS:
+            if os.path.isfile(path) and _is_supported_file(path):
                 files.append(path)
             elif os.path.isdir(path):
                 for root, dirs, fnames in os.walk(path):
                     for f in fnames:
                         fp = os.path.join(root, f)
-                        if Path(fp).suffix.lower() in SUPPORTED_EXTENSIONS:
+                        if _is_supported_file(fp):
                             files.append(fp)
         if files:
             self.files_dropped.emit(files)
@@ -1549,7 +1581,9 @@ class PhotoScribe(QMainWindow):
         title = QLabel("PhotoScribe")
         title.setObjectName("titleLabel")
         title_col.addWidget(title)
-        subtitle = QLabel("AI-powered metadata generation using local models")
+        subtitle = QLabel(
+            f"AI-powered metadata generation using local models   ·   v{APP_VERSION}"
+        )
         subtitle.setObjectName("subtitleLabel")
         title_col.addWidget(subtitle)
         header.addLayout(title_col)
@@ -1896,6 +1930,17 @@ class PhotoScribe(QMainWindow):
         )
         self.sidecar_check.setChecked(True)
         checks_grid.addWidget(self.sidecar_check, 4, 0)
+
+        self.auto_write_check = QCheckBox(
+            "Write to files automatically after generating"
+        )
+        self.auto_write_check.setChecked(False)
+        self.auto_write_check.setToolTip(
+            "When on, metadata is written to your files as soon as generation\n"
+            "finishes — useful for leaving a large folder to run unattended.\n"
+            "Honours your backup/append/skip options below."
+        )
+        checks_grid.addWidget(self.auto_write_check, 4, 1)
 
         options_layout.addLayout(checks_grid)
 
@@ -2274,6 +2319,8 @@ class PhotoScribe(QMainWindow):
         self.append_keywords_check.setChecked(append_kw == "true")
         skip_existing = self.settings.value("skip_existing", "false")
         self.skip_existing_check.setChecked(skip_existing == "true")
+        auto_write = self.settings.value("auto_write", "false")
+        self.auto_write_check.setChecked(auto_write == "true")
         sidecar = self.settings.value("use_sidecar", "true")
         self.sidecar_check.setChecked(sidecar == "true")
         face_tags = self.settings.value("use_face_tags", "true")
@@ -2305,6 +2352,10 @@ class PhotoScribe(QMainWindow):
         self.settings.setValue(
             "skip_existing",
             "true" if self.skip_existing_check.isChecked() else "false"
+        )
+        self.settings.setValue(
+            "auto_write",
+            "true" if self.auto_write_check.isChecked() else "false"
         )
         self.settings.setValue(
             "use_sidecar",
@@ -2449,7 +2500,7 @@ class PhotoScribe(QMainWindow):
             for root, dirs, fnames in os.walk(folder):
                 for f in fnames:
                     fp = os.path.join(root, f)
-                    if Path(fp).suffix.lower() in SUPPORTED_EXTENSIONS:
+                    if _is_supported_file(fp):
                         files.append(fp)
             if files:
                 self._on_files_dropped(files)
@@ -2931,13 +2982,27 @@ class PhotoScribe(QMainWindow):
         self.worker.log_message.connect(self.log)
         self.worker.start()
 
-        self.status_label.setText("Processing...")
+        self._gen_start = time.monotonic()
+        self._gen_total = len(pending)
+        self._gen_done = 0
+        self.status_label.setText(f"Processing 0/{self._gen_total}...")
 
     def _stop_processing(self):
         if self.worker:
             self.worker.cancel()
             self.log("Stopping...")
             self.status_label.setText("Stopping...")
+
+    @staticmethod
+    def _format_duration(seconds):
+        seconds = int(round(seconds))
+        if seconds < 60:
+            return f"{seconds}s"
+        m, s = divmod(seconds, 60)
+        if m < 60:
+            return f"{m}m {s:02d}s"
+        h, m = divmod(m, 60)
+        return f"{h}h {m:02d}m"
 
     def _on_progress(self, index, status):
         if index < 0 or index >= len(self.photos):
@@ -2964,6 +3029,17 @@ class PhotoScribe(QMainWindow):
         self.progress_bar.setValue(
             sum(1 for p in self.photos if p.status in ("done", "error"))
         )
+
+        # Live ETA based on average time per processed photo
+        self._gen_done = getattr(self, "_gen_done", 0) + 1
+        total = getattr(self, "_gen_total", 0)
+        start = getattr(self, "_gen_start", None)
+        if start and total and self._gen_done < total:
+            avg = (time.monotonic() - start) / self._gen_done
+            eta = avg * (total - self._gen_done)
+            self.status_label.setText(
+                f"Processing {self._gen_done}/{total} — ~{self._format_duration(eta)} left"
+            )
 
     def _on_finished(self):
         self.generate_btn.setVisible(True)
@@ -2994,6 +3070,11 @@ class PhotoScribe(QMainWindow):
             self._save_progress()
 
         self.worker = None
+
+        # Auto-write to files if requested (unattended generate → write)
+        if done > 0 and self.auto_write_check.isChecked():
+            self.log("Auto-writing metadata to files...")
+            self._write_metadata(auto=True)
 
     # ── Results ──
 
@@ -3119,9 +3200,10 @@ class PhotoScribe(QMainWindow):
 
     # ── Write metadata ──
 
-    def _write_metadata(self):
+    def _write_metadata(self, auto=False):
         if not MetadataWriter.check_exiftool():
-            self._show_exiftool_missing_dialog()
+            if not auto:
+                self._show_exiftool_missing_dialog()
             return
 
         completed = [p for p in self.photos if p.status == "done" and p.metadata]
@@ -3138,18 +3220,19 @@ class PhotoScribe(QMainWindow):
         if use_sidecar and raw_count:
             sidecar_note = f"\nRAW files ({raw_count}): metadata written to XMP sidecar."
 
-        reply = QMessageBox.question(
-            self, "Write Metadata",
-            f"Write metadata to {len(completed)} file(s)?\n\n"
-            f"{'Backup files will be created.' if self.backup_check.isChecked() else 'WARNING: No backup will be created!'}\n"
-            f"{'Keywords will be appended to existing.' if self.append_keywords_check.isChecked() else 'Keywords will replace existing.'}\n"
-            f"{'Title/caption will be skipped if already present.' if self.skip_existing_check.isChecked() else 'Title/caption will be overwritten.'}"
-            f"{sidecar_note}",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-        if reply != QMessageBox.Yes:
-            return
+        if not auto:
+            reply = QMessageBox.question(
+                self, "Write Metadata",
+                f"Write metadata to {len(completed)} file(s)?\n\n"
+                f"{'Backup files will be created.' if self.backup_check.isChecked() else 'WARNING: No backup will be created!'}\n"
+                f"{'Keywords will be appended to existing.' if self.append_keywords_check.isChecked() else 'Keywords will replace existing.'}\n"
+                f"{'Title/caption will be skipped if already present.' if self.skip_existing_check.isChecked() else 'Title/caption will be overwritten.'}"
+                f"{sidecar_note}",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply != QMessageBox.Yes:
+                return
 
         # Prepare items list
         items = [(p.filepath, p.metadata) for p in completed]
@@ -3529,7 +3612,7 @@ class PhotoScribe(QMainWindow):
         try:
             if sys.platform == "win32":
                 # Try PowerShell first (wmic is deprecated/removed on Win11 24H2+)
-                result = subprocess.run(
+                result = _run(
                     ["powershell", "-NoProfile", "-Command",
                      "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"],
                     capture_output=True, text=True, timeout=10
@@ -3538,7 +3621,7 @@ class PhotoScribe(QMainWindow):
                     info["ram_mb"] = int(result.stdout.strip()) // (1024 * 1024)
                 else:
                     # Fallback to wmic for older Windows versions
-                    result = subprocess.run(
+                    result = _run(
                         ["wmic", "computersystem", "get", "TotalPhysicalMemory", "/value"],
                         capture_output=True, text=True, timeout=10
                     )
@@ -3546,7 +3629,7 @@ class PhotoScribe(QMainWindow):
                         if "TotalPhysicalMemory=" in line:
                             info["ram_mb"] = int(line.split("=")[1].strip()) // (1024 * 1024)
             elif sys.platform == "darwin":
-                result = subprocess.run(
+                result = _run(
                     ["sysctl", "-n", "hw.memsize"],
                     capture_output=True, text=True, timeout=5
                 )
@@ -3590,7 +3673,7 @@ class PhotoScribe(QMainWindow):
         # Apple Silicon (shared memory)
         if sys.platform == "darwin":
             try:
-                result = subprocess.run(
+                result = _run(
                     ["sysctl", "-n", "machdep.cpu.brand_string"],
                     capture_output=True, text=True, timeout=5
                 )
