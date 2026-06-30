@@ -2,6 +2,17 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.3.4] — 2026-06-30
+
+### Added
+- **Auto-write after generating** — a new option writes metadata to your files as soon as generation finishes, so a large folder can run fully unattended.
+- **Live ETA** on the progress bar while generating (estimated time remaining).
+- **Version number** shown under the title.
+
+### Fixed
+- **Windows: ExifTool no longer steals focus.** Each ExifTool call was popping a console window that grabbed focus mid-write; that window is now suppressed.
+- **Ignore macOS AppleDouble (`._*`) and hidden files** when loading. On external/network volumes these were loaded as phantom photos (doubling the count and wasting processing).
+
 ## [1.3.3] — 2026-06-28
 
 ### Added

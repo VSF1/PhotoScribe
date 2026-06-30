@@ -2,7 +2,14 @@
 # PhotoScribe macOS App Bundle Spec
 # Run: pyinstaller PhotoScribe.spec --noconfirm
 
+import re
 from PyInstaller.utils.hooks import collect_all, collect_data_files
+
+# Single source of truth: read the version from photoscribe.py
+APP_VERSION = re.search(
+    r'APP_VERSION\s*=\s*"([^"]+)"',
+    open('photoscribe.py', encoding='utf-8').read()
+).group(1)
 
 # rawpy needs full collection (native libraw extension + data)
 rawpy_datas, rawpy_binaries, rawpy_hiddenimports = collect_all('rawpy')
@@ -151,7 +158,7 @@ app = BUNDLE(
     name='PhotoScribe.app',
     icon='PhotoScribe.icns',
     bundle_identifier='com.photoscribe.app',
-    version='1.3.3',
+    version=APP_VERSION,
     info_plist={
         'NSPrincipalClass': 'NSApplication',
         'NSAppleScriptEnabled': False,
