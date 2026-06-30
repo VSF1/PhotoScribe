@@ -1704,10 +1704,10 @@ class PhotoScribe(QMainWindow):
         refresh_btn.clicked.connect(self._refresh_models)
         model_layout.addWidget(refresh_btn, 0, 2)
 
-        recommend_btn = QPushButton("Recommend Model")
-        recommend_btn.setToolTip("Detect your GPU/RAM and recommend the best model")
-        recommend_btn.clicked.connect(self._recommend_model)
-        model_layout.addWidget(recommend_btn, 0, 3)
+        self.recommend_btn = QPushButton("Recommend Model")
+        self.recommend_btn.setToolTip("Detect your GPU/RAM and recommend the best model")
+        self.recommend_btn.clicked.connect(self._recommend_model)
+        model_layout.addWidget(self.recommend_btn, 0, 3)
 
         model_layout.addWidget(QLabel("URL:"), 1, 0)
         self.ollama_url = QLineEdit("http://localhost:11434")
@@ -1715,6 +1715,7 @@ class PhotoScribe(QMainWindow):
             "LM Studio: http://localhost:1234 (default)\n"
             "Ollama: http://localhost:11434"
         )
+        self.ollama_url.textChanged.connect(self._on_url_changed)
         model_layout.addWidget(self.ollama_url, 1, 1, 1, 3)
 
         model_layout.addWidget(QLabel("API Key:"), 2, 0)
@@ -2294,6 +2295,14 @@ class PhotoScribe(QMainWindow):
         # Kick off model check
         QTimer.singleShot(500, self._refresh_models)
 
+    def _on_url_changed(self, text: str):
+        """Disable model recommender if URL is not local."""
+        is_local = "localhost" in text or "127.0.0.1" in text
+        self.recommend_btn.setEnabled(is_local)
+        self.recommend_btn.setToolTip(
+            "Detect your GPU/RAM and recommend the best model" if is_local
+            else "Hardware detection is only available for local servers"
+        )
     # ── Settings persistence ──
 
     def _load_settings(self):
@@ -2449,6 +2458,7 @@ class PhotoScribe(QMainWindow):
                     self.ollama_url.setText(fallback)
                     break
 
+        self._on_url_changed(self.ollama_url.text())
         if backend:
             self.backend = backend
 

@@ -1,6 +1,6 @@
 # PhotoScribe
 
-AI-powered photo metadata generator that runs entirely on your Mac or Windows PC. Drop in your photos, generate title, caption, and keywords using a local AI model, review everything, then write it straight to your files as IPTC and XMP metadata.
+AI-powered photo metadata generator that runs entirely on your Mac, Linux or Windows PC. Drop in your photos, generate title, caption, and keywords using a local AI model, review everything, then write it straight to your files as IPTC and XMP metadata.
 
 **No cloud. No subscription. No data leaves your machine.**
 
@@ -202,6 +202,11 @@ To build the macOS app bundle yourself:
 ```
 
 This produces a signed and notarized `dist/PhotoScribe.dmg`. Requires Python 3.10–3.13 and your Apple Developer credentials stored via `xcrun notarytool store-credentials`.
+
+```bash
+./build_linux.sh
+```
+This produces a signed and notarized `dist/PhotoScribe.deb` or `dist/PhotoScribe.rpm`. Requires Python 3.10–3.13 and your GPG signing key.
 
 The **Windows installer** is built by GitHub Actions on every `v*` tag (`.github/workflows/build-windows.yml`), which attaches `PhotoScribe-Setup.exe` to the release automatically. To build it locally on Windows: install the dependencies, run `fetch-exiftool.ps1`, build with `pyinstaller PhotoScribe-Windows.spec`, copy `exiftool.exe` and `exiftool_files\` into `dist\PhotoScribe\`, then compile `installer.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php).
 
