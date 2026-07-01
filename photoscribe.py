@@ -1130,468 +1130,6 @@ class MetadataWriteWorker(QThread):
 
 
 # ─────────────────────────────────────────────────────────
-# Themes
-# ─────────────────────────────────────────────────────────
-
-THEMES = {
-    "Dark (Default)": """
-        QMainWindow {
-            background-color: #1a1a1e;
-        }
-        QWidget {
-            color: #e0e0e0;
-            font-family: 'Helvetica Neue', 'Segoe UI', sans-serif;
-            font-size: 13px;
-        }
-        QGroupBox {
-            font-weight: 600;
-            font-size: 12px;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
-            color: #a0a0a0;
-            border: 1px solid #2a2a30;
-            border-radius: 8px;
-            margin-top: 12px;
-            padding: 12px 12px 10px 12px;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            subcontrol-position: top left;
-            padding: 0 8px;
-            margin-left: 8px;
-        }
-        QPushButton {
-            background-color: #2a2a30;
-            border: 1px solid #3a3a42;
-            border-radius: 6px;
-            padding: 8px 16px;
-            font-weight: 500;
-            color: #e0e0e0;
-            min-height: 20px;
-        }
-        QPushButton:hover {
-            background-color: #35353d;
-            border-color: #e8a23a;
-        }
-        QPushButton:pressed {
-            background-color: #e8a23a;
-            color: #1a1a1e;
-        }
-        QPushButton:disabled {
-            background-color: #222226;
-            color: #555;
-            border-color: #2a2a30;
-        }
-        QPushButton#primaryBtn {
-            background-color: #e8a23a;
-            color: #1a1a1e;
-            font-weight: 700;
-            border: none;
-        }
-        QPushButton#primaryBtn:hover {
-            background-color: #f0b04a;
-        }
-        QPushButton#primaryBtn:disabled {
-            background-color: #5a4a20;
-            color: #888;
-        }
-        QPushButton#dangerBtn {
-            background-color: #c0392b;
-            color: #fff;
-            border: none;
-        }
-        QPushButton#dangerBtn:hover {
-            background-color: #e74c3c;
-        }
-        QPushButton#writeBtn {
-            background-color: #27ae60;
-            color: #fff;
-            font-weight: 700;
-            border: none;
-        }
-        QPushButton#writeBtn:hover {
-            background-color: #2ecc71;
-        }
-        QPushButton#exportBtn {
-            background-color: #2980b9;
-            color: #fff;
-            font-weight: 700;
-            border: none;
-        }
-        QPushButton#exportBtn:hover {
-            background-color: #3498db;
-        }
-        QPushButton#exportBtn:disabled {
-            background-color: #1a3a50;
-            color: #888;
-        }
-        QComboBox {
-            background-color: #2a2a30;
-            border: 1px solid #3a3a42;
-            border-radius: 6px;
-            padding: 6px 10px;
-            min-height: 20px;
-        }
-        QComboBox:hover {
-            border-color: #e8a23a;
-        }
-        QComboBox QAbstractItemView {
-            background-color: #2a2a30;
-            border: 1px solid #3a3a42;
-            selection-background-color: #e8a23a;
-            selection-color: #1a1a1e;
-        }
-        QComboBox::drop-down {
-            border: none;
-            width: 24px;
-        }
-        QLineEdit, QTextEdit, QPlainTextEdit {
-            background-color: #222226;
-            border: 1px solid #3a3a42;
-            border-radius: 6px;
-            padding: 10px 12px;
-            color: #e0e0e0;
-            selection-background-color: #e8a23a;
-            selection-color: #1a1a1e;
-        }
-        QLineEdit {
-            min-height: 22px;
-        }
-        QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
-            border-color: #e8a23a;
-        }
-        QTableWidget {
-            background-color: #1e1e22;
-            border: 1px solid #2a2a30;
-            border-radius: 6px;
-            gridline-color: #2a2a30;
-            selection-background-color: #3a3520;
-        }
-        QTableWidget::item {
-            padding: 6px 8px;
-            border-bottom: 1px solid #2a2a30;
-        }
-        QTableWidget::item:selected {
-            background-color: #3a3520;
-            color: #e8a23a;
-        }
-        QHeaderView::section {
-            background-color: #222226;
-            color: #a0a0a0;
-            border: none;
-            border-bottom: 2px solid #e8a23a;
-            padding: 8px;
-            font-weight: 600;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        QProgressBar {
-            background-color: #222226;
-            border: 1px solid #2a2a30;
-            border-radius: 4px;
-            height: 8px;
-            text-align: center;
-            font-size: 10px;
-        }
-        QProgressBar::chunk {
-            background-color: #e8a23a;
-            border-radius: 3px;
-        }
-        QScrollArea {
-            border: none;
-        }
-        QScrollBar:vertical {
-            background-color: #1a1a1e;
-            width: 10px;
-            border: none;
-        }
-        QScrollBar::handle:vertical {
-            background-color: #3a3a42;
-            border-radius: 5px;
-            min-height: 30px;
-        }
-        QScrollBar::handle:vertical:hover {
-            background-color: #e8a23a;
-        }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-            height: 0;
-        }
-        QTabWidget::pane {
-            border: 1px solid #2a2a30;
-            border-radius: 6px;
-            background-color: #1e1e22;
-        }
-        QTabBar::tab {
-            background-color: #222226;
-            color: #a0a0a0;
-            border: 1px solid #2a2a30;
-            border-bottom: none;
-            padding: 8px 16px;
-            margin-right: 2px;
-            border-top-left-radius: 6px;
-            border-top-right-radius: 6px;
-            font-weight: 500;
-        }
-        QTabBar::tab:selected {
-            background-color: #1e1e22;
-            color: #e8a23a;
-            border-bottom: 2px solid #e8a23a;
-        }
-        QTabBar::tab:hover:!selected {
-            color: #e0e0e0;
-        }
-        QCheckBox {
-            spacing: 8px;
-        }
-        QCheckBox::indicator {
-            width: 16px;
-            height: 16px;
-            border-radius: 4px;
-            border: 1px solid #3a3a42;
-            background-color: #222226;
-        }
-        QCheckBox::indicator:checked {
-            background-color: #e8a23a;
-            border-color: #e8a23a;
-        }
-        QSplitter::handle {
-            background-color: #2a2a30;
-            width: 2px;
-        }
-        QSplitter::handle:hover {
-            background-color: #e8a23a;
-        }
-        QLabel#statusLabel {
-            color: #888;
-            font-size: 11px;
-        }
-        QLabel#dropLabel {
-            color: #666;
-            font-size: 15px;
-            font-weight: 300;
-        }
-        QLabel#titleLabel {
-            font-family: 'Bebas Neue', 'Arial Narrow', sans-serif;
-            font-size: 28px;
-            font-weight: 400;
-            color: #e8a23a;
-            letter-spacing: 2px;
-        }
-        QLabel#subtitleLabel {
-            font-size: 11px;
-            color: #666;
-            font-weight: 400;
-            letter-spacing: 1px;
-        }
-    """,
-    "Light": """
-        QMainWindow {
-            background-color: #f0f0f0;
-        }
-        QWidget {
-            color: #222;
-            font-family: 'Helvetica Neue', 'Segoe UI', sans-serif;
-            font-size: 13px;
-        }
-        QGroupBox {
-            font-weight: 600;
-            font-size: 12px;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
-            color: #555;
-            border: 1px solid #d0d0d0;
-            border-radius: 8px;
-            margin-top: 12px;
-            padding: 12px 12px 10px 12px;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            subcontrol-position: top left;
-            padding: 0 8px;
-            margin-left: 8px;
-        }
-        QPushButton {
-            background-color: #e0e0e0;
-            border: 1px solid #c0c0c0;
-            border-radius: 6px;
-            padding: 8px 16px;
-            font-weight: 500;
-            color: #222;
-            min-height: 20px;
-        }
-        QPushButton:hover {
-            background-color: #d5d5d5;
-            border-color: #0078d7;
-        }
-        QPushButton:pressed {
-            background-color: #0078d7;
-            color: #fff;
-        }
-        QPushButton:disabled {
-            background-color: #e5e5e5;
-            color: #aaa;
-            border-color: #d0d0d0;
-        }
-        QPushButton#primaryBtn {
-            background-color: #0078d7;
-            color: #fff;
-            font-weight: 700;
-            border: none;
-        }
-        QPushButton#primaryBtn:hover {
-            background-color: #1085e5;
-        }
-        QPushButton#primaryBtn:disabled {
-            background-color: #a0c7e8;
-            color: #e0e0e0;
-        }
-        QPushButton#dangerBtn, QPushButton#writeBtn, QPushButton#exportBtn {
-            color: #fff;
-            border: none;
-        }
-        QPushButton#dangerBtn { background-color: #d9534f; }
-        QPushButton#dangerBtn:hover { background-color: #c9302c; }
-        QPushButton#writeBtn { background-color: #5cb85c; }
-        QPushButton#writeBtn:hover { background-color: #449d44; }
-        QPushButton#exportBtn { background-color: #337ab7; }
-        QPushButton#exportBtn:hover { background-color: #286090; }
-        QPushButton#exportBtn:disabled { background-color: #a0c7e8; color: #fff; }
-
-        QComboBox {
-            background-color: #fff;
-            border: 1px solid #c0c0c0;
-            border-radius: 6px;
-            padding: 6px 10px;
-            min-height: 20px;
-        }
-        QComboBox:hover {
-            border-color: #0078d7;
-        }
-        QComboBox QAbstractItemView {
-            background-color: #fff;
-            border: 1px solid #c0c0c0;
-            selection-background-color: #0078d7;
-            selection-color: #fff;
-        }
-        QComboBox::drop-down { border: none; width: 24px; }
-
-        QLineEdit, QTextEdit, QPlainTextEdit {
-            background-color: #fff;
-            border: 1px solid #c0c0c0;
-            border-radius: 6px;
-            padding: 10px 12px;
-            color: #222;
-            selection-background-color: #0078d7;
-            selection-color: #fff;
-        }
-        QLineEdit { min-height: 22px; }
-        QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
-            border-color: #0078d7;
-        }
-
-        QTableWidget {
-            background-color: #fff;
-            border: 1px solid #d0d0d0;
-            border-radius: 6px;
-            gridline-color: #e0e0e0;
-            selection-background-color: #e6f1f9;
-        }
-        QTableWidget::item {
-            padding: 6px 8px;
-            border-bottom: 1px solid #e0e0e0;
-        }
-        QTableWidget::item:selected {
-            background-color: #e6f1f9;
-            color: #0078d7;
-        }
-        QHeaderView::section {
-            background-color: #f8f8f8;
-            color: #555;
-            border: none;
-            border-bottom: 2px solid #0078d7;
-            padding: 8px;
-            font-weight: 600;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        QProgressBar {
-            background-color: #e0e0e0;
-            border: 1px solid #c0c0c0;
-            border-radius: 4px;
-            height: 8px;
-            text-align: center;
-            font-size: 10px;
-        }
-        QProgressBar::chunk {
-            background-color: #0078d7;
-            border-radius: 3px;
-        }
-        QScrollArea { border: none; }
-        QScrollBar:vertical {
-            background-color: #f0f0f0;
-            width: 10px;
-            border: none;
-        }
-        QScrollBar::handle:vertical {
-            background-color: #c0c0c0;
-            border-radius: 5px;
-            min-height: 30px;
-        }
-        QScrollBar::handle:vertical:hover { background-color: #0078d7; }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-
-        QTabWidget::pane {
-            border: 1px solid #d0d0d0;
-            border-radius: 6px;
-            background-color: #f8f8f8;
-        }
-        QTabBar::tab {
-            background-color: #e0e0e0;
-            color: #555;
-            border: 1px solid #d0d0d0;
-            border-bottom: none;
-            padding: 8px 16px;
-            margin-right: 2px;
-            border-top-left-radius: 6px;
-            border-top-right-radius: 6px;
-            font-weight: 500;
-        }
-        QTabBar::tab:selected {
-            background-color: #f8f8f8;
-            color: #0078d7;
-            border-bottom: 2px solid #0078d7;
-        }
-        QTabBar::tab:hover:!selected { color: #222; }
-
-        QCheckBox { spacing: 8px; }
-        QCheckBox::indicator {
-            width: 16px;
-            height: 16px;
-            border-radius: 4px;
-            border: 1px solid #c0c0c0;
-            background-color: #fff;
-        }
-        QCheckBox::indicator:checked {
-            background-color: #0078d7;
-            border-color: #0078d7;
-        }
-        QSplitter::handle {
-            background-color: #d0d0d0;
-            width: 2px;
-        }
-        QSplitter::handle:hover { background-color: #0078d7; }
-        QLabel#statusLabel { color: #888; font-size: 11px; }
-        QLabel#dropLabel { color: #888; font-size: 15px; font-weight: 300; }
-        QLabel#titleLabel { color: #0078d7; }
-        QLabel#subtitleLabel { color: #777; }
-    """
-}
-
-
-
-# ─────────────────────────────────────────────────────────
 # Drop zone widget
 # ─────────────────────────────────────────────────────────
 
@@ -1602,18 +1140,7 @@ class DropZone(QFrame):
         super().__init__()
         self.setAcceptDrops(True)
         self.setMinimumHeight(120)
-        self.setStyleSheet("""
-            DropZone {
-                border: 2px dashed #3a3a42;
-                border-radius: 12px;
-                background-color: #1e1e22;
-            }
-            DropZone:hover {
-                border-color: #e8a23a;
-                background-color: #222226;
-            }
-        """)
-
+        
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
 
@@ -1638,39 +1165,20 @@ class DropZone(QFrame):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-            self.setStyleSheet("""
-                DropZone {
-                    border: 2px solid #e8a23a;
-                    border-radius: 12px;
-                    background-color: #2a2520;
-                }
-            """)
+            self.setProperty("dragging", True)
+            self.style().unpolish(self)
+            self.style().polish(self)
 
-    def dragLeaveEvent(self, event):
-        self.setStyleSheet("""
-            DropZone {
-                border: 2px dashed #3a3a42;
-                border-radius: 12px;
-                background-color: #1e1e22;
-            }
-            DropZone:hover {
-                border-color: #e8a23a;
-                background-color: #222226;
-            }
-        """)
+    def dragLeaveEvent(self, event: QDragEnterEvent):
+        self.setProperty("dragging", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def dropEvent(self, event: QDropEvent):
-        self.setStyleSheet("""
-            DropZone {
-                border: 2px dashed #3a3a42;
-                border-radius: 12px;
-                background-color: #1e1e22;
-            }
-            DropZone:hover {
-                border-color: #e8a23a;
-                background-color: #222226;
-            }
-        """)
+        self.setProperty("dragging", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
         urls = event.mimeData().urls()
         files = []
         for url in urls:
@@ -1692,25 +1200,16 @@ class DropZone(QFrame):
 # ─────────────────────────────────────────────────────────
 
 class StatusDot(QLabel):
-    COLOURS = {
-        "pending": "#555",
-        "processing": "#e8a23a",
-        "done": "#27ae60",
-        "error": "#c0392b",
-    }
-
     def __init__(self, status="pending"):
         super().__init__()
         self.setFixedSize(12, 12)
+        self.setObjectName("statusDot")
         self.set_status(status)
 
     def set_status(self, status):
-        colour = self.COLOURS.get(status, "#555")
-        self.setStyleSheet(f"""
-            background-color: {colour};
-            border-radius: 6px;
-            border: none;
-        """)
+        self.setProperty("status", status)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 # ─────────────────────────────────────────────────────────
@@ -1741,6 +1240,7 @@ class PhotoScribe(QMainWindow):
         self.photos: list[PhotoItem] = []
         self.worker: Optional[OllamaWorker] = None
         self.settings = QSettings("PhotoScribe", "PhotoScribe")
+        self.current_theme = "dark"
         self._detected_folder_context: Optional[FolderContext] = None
         self._preview_cache = {}
 
@@ -1748,10 +1248,6 @@ class PhotoScribe(QMainWindow):
         self._load_settings()
         self._check_dependencies()
         QTimer.singleShot(500, self._refresh_models)
-
-    def on_theme_changed(self, theme_name):
-        QApplication.instance().setStyleSheet(THEMES.get(theme_name, THEMES["Dark (Default)"]))
-        self.settings.setValue("theme", theme_name)
 
     def _check_dependencies(self):
         if not MetadataWriter.check_exiftool():
@@ -1906,10 +1402,10 @@ class PhotoScribe(QMainWindow):
         settings_layout.setContentsMargins(0, 0, 6, 0)
 
         # Model selection
-        model_group = CollapsibleGroupBox("Model")
-        model_group.setChecked(True)  # Start expanded
+        self.model_group = CollapsibleGroupBox("Model")
+        self.model_group.setChecked(True)  # Start expanded
         model_layout = QGridLayout()
-        model_group.setLayout(model_layout)
+        self.model_group.setLayout(model_layout)
         model_layout.setSpacing(8)
 
         model_layout.addWidget(QLabel("Backend:"), 0, 0)
@@ -1960,13 +1456,13 @@ class PhotoScribe(QMainWindow):
 
         model_layout.setColumnStretch(1, 1)
 
-        settings_layout.addWidget(model_group)
+        settings_layout.addWidget(self.model_group)
 
         # Model download progress (hidden by default)
         self.model_download_widget = QWidget()
         dl_layout = QVBoxLayout(self.model_download_widget)
         dl_layout.setContentsMargins(0, 4, 0, 0)
-        dl_layout.setSpacing(4)
+        dl_layout.setSpacing(4) 
         self.model_download_label = QLabel("")
         self.model_download_label.setStyleSheet(
             "font-size: 14px; font-weight: 600; color: #e8a23a; border: none;"
@@ -1983,10 +1479,10 @@ class PhotoScribe(QMainWindow):
         settings_layout.addWidget(self.model_download_widget)
 
         # Prompt
-        prompt_group = CollapsibleGroupBox("Prompt")
-        prompt_group.setChecked(True)
+        self.prompt_group = CollapsibleGroupBox("Prompt")
+        self.prompt_group.setChecked(True)
         prompt_layout = QVBoxLayout()
-        prompt_group.setLayout(prompt_layout)
+        self.prompt_group.setLayout(prompt_layout)
         self.prompt_edit = QTextEdit()
         self.prompt_edit.setMaximumHeight(120)
         self.prompt_edit.setPlaceholderText("Enter your prompt for the AI model...")
@@ -2031,7 +1527,7 @@ class PhotoScribe(QMainWindow):
 
         preset_row.addStretch()
         prompt_layout.addLayout(preset_row)
-        settings_layout.addWidget(prompt_group)
+        settings_layout.addWidget(self.prompt_group)
 
         # Initialise prompt presets
         self._init_prompt_presets()
@@ -2380,12 +1876,9 @@ class PhotoScribe(QMainWindow):
 
         # Photo preview
         self.detail_preview = QLabel()
+        self.detail_preview.setObjectName("detailPreview")
         self.detail_preview.setFixedHeight(380)
         self.detail_preview.setAlignment(Qt.AlignCenter)
-        self.detail_preview.setStyleSheet(
-            "background-color: #1a1a1e; border: 1px solid #2a2a30; "
-            "border-radius: 6px; color: #555; font-size: 12px;"
-        )
         self.detail_preview.setText("No preview")
         detail_layout.addWidget(self.detail_preview)
 
@@ -2498,6 +1991,12 @@ class PhotoScribe(QMainWindow):
         self.import_btn.clicked.connect(self._import_csv)
         action_row.addWidget(self.import_btn)
 
+        action_row.addStretch()
+        self.toggle_theme_btn = QPushButton("Toggle Theme")
+        self.toggle_theme_btn.setMinimumHeight(40)
+        self.toggle_theme_btn.clicked.connect(self._toggle_theme)
+        action_row.addWidget(self.toggle_theme_btn)
+
         right_layout.addLayout(action_row)
 
         # Progress bar
@@ -2578,6 +2077,11 @@ class PhotoScribe(QMainWindow):
             self.recommend_btn.setToolTip("Show a list of recommended models to install on your remote server")
         self.recommend_btn.setEnabled(True)
 
+    def _toggle_theme(self):
+        """Toggle between light and dark themes."""
+        self.current_theme = "light" if self.current_theme == "dark" else "dark"
+        self._apply_theme()
+
     # ── Settings persistence ──
 
     def _load_settings(self):
@@ -2601,6 +2105,8 @@ class PhotoScribe(QMainWindow):
         if prompt:
             self.prompt_edit.setText(prompt)
         photographer = self.settings.value("photographer", "")
+        self.current_theme = self.settings.value("theme", "dark")
+        self._apply_theme()
         if photographer:
             self.context_fields["ctx_photographer"].setText(photographer)
         backup = self.settings.value("create_backup", "true")
@@ -2633,6 +2139,7 @@ class PhotoScribe(QMainWindow):
         self.settings.setValue("api_key", self.api_key_edit.text())
         self.settings.setValue("timeout", self.timeout_spinbox.value())
         self.settings.setValue("prompt", self.prompt_edit.toPlainText())
+        self.settings.setValue("theme", self.current_theme)
         self.settings.setValue("backend", self.backend)
         self.settings.setValue(
             "create_backup",
@@ -4203,24 +3710,74 @@ class PhotoScribe(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    app.setStyleSheet(STYLESHEET)
-
-    # Dark palette
-    palette = QPalette()
-    palette.setColor(QPalette.Window, QColor("#1a1a1e"))
-    palette.setColor(QPalette.WindowText, QColor("#e0e0e0"))
-    palette.setColor(QPalette.Base, QColor("#222226"))
-    palette.setColor(QPalette.AlternateBase, QColor("#1c1c20"))
-    palette.setColor(QPalette.Text, QColor("#e0e0e0"))
-    palette.setColor(QPalette.Button, QColor("#2a2a30"))
-    palette.setColor(QPalette.ButtonText, QColor("#e0e0e0"))
-    palette.setColor(QPalette.Highlight, QColor("#e8a23a"))
-    palette.setColor(QPalette.HighlightedText, QColor("#1a1a1e"))
-    app.setPalette(palette)
-
     window = PhotoScribe()
     window.show()
     sys.exit(app.exec())
+
+
+def _get_resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller."""
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+def _load_stylesheet(filename):
+    """Load a QSS file from the application directory."""
+    try:
+        path = _get_resource_path(filename)
+        with open(path, "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        print(f"Warning: {filename} not found.", file=sys.stderr)
+        return ""
+
+PhotoScribe._dark_stylesheet = _load_stylesheet("style.qss")
+PhotoScribe._light_stylesheet = _load_stylesheet("style_light.qss")
+
+dark_palette = QPalette()
+dark_palette.setColor(QPalette.Window, QColor("#1a1a1e"))
+dark_palette.setColor(QPalette.WindowText, QColor("#e0e0e0"))
+dark_palette.setColor(QPalette.Base, QColor("#222226"))
+dark_palette.setColor(QPalette.AlternateBase, QColor("#1c1c20"))
+dark_palette.setColor(QPalette.Text, QColor("#e0e0e0"))
+dark_palette.setColor(QPalette.Button, QColor("#2a2a30"))
+dark_palette.setColor(QPalette.ButtonText, QColor("#e0e0e0"))
+dark_palette.setColor(QPalette.Highlight, QColor("#e8a23a"))
+dark_palette.setColor(QPalette.HighlightedText, QColor("#1a1a1e"))
+dark_palette.setColor(QPalette.ToolTipBase, QColor("#2a2a30"))
+dark_palette.setColor(QPalette.ToolTipText, QColor("#e0e0e0"))
+
+light_palette = QPalette()
+light_palette.setColor(QPalette.Window, QColor("#f0f0f0"))
+light_palette.setColor(QPalette.WindowText, QColor("#222222"))
+light_palette.setColor(QPalette.Base, QColor("#ffffff"))
+light_palette.setColor(QPalette.AlternateBase, QColor("#f7f7f7"))
+light_palette.setColor(QPalette.Text, QColor("#222222"))
+light_palette.setColor(QPalette.Button, QColor("#e1e1e1"))
+light_palette.setColor(QPalette.ButtonText, QColor("#222222"))
+light_palette.setColor(QPalette.Highlight, QColor("#0078d7"))
+light_palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+light_palette.setColor(QPalette.ToolTipBase, QColor("#ffffff"))
+light_palette.setColor(QPalette.ToolTipText, QColor("#222222"))
+
+PhotoScribe._dark_palette = dark_palette
+PhotoScribe._light_palette = light_palette
+
+def _apply_theme(self):
+    """Apply the current theme (light or dark) to the application."""
+    app = QApplication.instance()
+    if self.current_theme == "light":
+        app.setPalette(self._light_palette)
+        app.setStyleSheet(self._light_stylesheet)
+        self.toggle_theme_btn.setText("🌙 Dark Theme")
+    else: # dark
+        app.setPalette(self._dark_palette)
+        app.setStyleSheet(self._dark_stylesheet)
+        self.toggle_theme_btn.setText("☀️ Light Theme")
+
+# Monkey-patch the method into the class
+PhotoScribe._apply_theme = _apply_theme
 
 
 if __name__ == "__main__":

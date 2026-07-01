@@ -129,11 +129,11 @@ echo -e "${GREEN}✓${NC} Build dependencies ready"
 # ── PyInstaller build ──
 echo ""
 echo "Building PhotoScribe executable..."
-pyinstaller PhotoScribe.spec --noconfirm --clean
+pyinstaller PhotoScribe-Linux.spec --noconfirm --clean
 
-APP_DIR="$SCRIPT_DIR/dist/PhotoScribe"
+APP_DIR="$SCRIPT_DIR/dist/photoscribe"
 if [ ! -d "$APP_DIR" ]; then
-    echo -e "${RED}✗ Build failed — dist/PhotoScribe directory not found${NC}"
+    echo -e "${RED}✗ Build failed — dist/photoscribe directory not found${NC}"
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Executable built"
@@ -173,7 +173,7 @@ EOF
         --vendor "Andy Hutchinson" \
         --url "https://github.com/repomonkey/PhotoScribe" \
         --description "AI-powered photo metadata generator that runs entirely on your PC. No cloud, no subscription." \
-        "PhotoScribe/=/opt/photoscribe"
+        "photoscribe/=/opt/photoscribe"
 
     PACKAGE_FILE=$(find dist/ -name "photoscribe*.${PKG_TYPE}" -print -quit)
     echo -e "${GREEN}✓${NC} Package created: $PACKAGE_FILE"
@@ -192,7 +192,7 @@ else # Fallback to tar.gz
     echo "Creating tar.gz archive..."
     ARCHIVE_NAME="PhotoScribe-linux-x86_64.tar.gz"
     cd dist
-    tar -czf "$ARCHIVE_NAME" PhotoScribe
+    tar -czf "$ARCHIVE_NAME" photoscribe
     cd ..
     echo -e "${GREEN}✓${NC} dist/$ARCHIVE_NAME created"
 
@@ -217,5 +217,5 @@ else # Fallback to tar.gz
     echo "    gpg --verify dist/$ARCHIVE_NAME.asc dist/$ARCHIVE_NAME"
     echo ""
     echo "  To run the app:"
-    echo "    tar -xzf dist/$ARCHIVE_NAME && ./PhotoScribe/photoscribe"
+    echo "    tar -xzf dist/$ARCHIVE_NAME && ./photoscribe/photoscribe"
 fi
