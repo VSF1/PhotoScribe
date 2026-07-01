@@ -77,6 +77,8 @@ from PySide6.QtGui import (
     QPalette, QIcon, QAction, QPainter, QFontDatabase
 )
 
+from collapsible_groupbox import CollapsibleGroupBox
+
 
 # ─────────────────────────────────────────────────────────
 # Supported file formats
@@ -1691,12 +1693,14 @@ class PhotoScribe(QMainWindow):
         settings_inner = QWidget()
         settings_scroll.setWidget(settings_inner)
         settings_layout = QVBoxLayout(settings_inner)
-        settings_layout.setSpacing(8)
+        settings_layout.setSpacing(0)
         settings_layout.setContentsMargins(0, 0, 6, 0)
 
         # Model selection
-        model_group = QGroupBox("Model")
-        model_layout = QGridLayout(model_group)
+        model_group = CollapsibleGroupBox("Model")
+        model_group.setChecked(True)  # Start expanded
+        model_layout = QGridLayout()
+        model_group.setLayout(model_layout)
         model_layout.setSpacing(8)
 
         model_layout.addWidget(QLabel("Backend:"), 0, 0)
@@ -1770,8 +1774,10 @@ class PhotoScribe(QMainWindow):
         settings_layout.addWidget(self.model_download_widget)
 
         # Prompt
-        prompt_group = QGroupBox("Prompt")
-        prompt_layout = QVBoxLayout(prompt_group)
+        prompt_group = CollapsibleGroupBox("Prompt")
+        prompt_group.setChecked(True)
+        prompt_layout = QVBoxLayout()
+        prompt_group.setLayout(prompt_layout)
         self.prompt_edit = QTextEdit()
         self.prompt_edit.setMaximumHeight(120)
         self.prompt_edit.setPlaceholderText("Enter your prompt for the AI model...")
@@ -1822,8 +1828,9 @@ class PhotoScribe(QMainWindow):
         self._init_prompt_presets()
 
         # Batch context
-        context_group = QGroupBox("Batch Context (applied to all photos)")
-        context_layout = QGridLayout(context_group)
+        context_group = CollapsibleGroupBox("Batch Context (applied to all photos)")
+        context_layout = QGridLayout()
+        context_group.setLayout(context_layout)
         context_layout.setSpacing(10)
         context_layout.setContentsMargins(12, 8, 12, 12)
 
@@ -1869,8 +1876,9 @@ class PhotoScribe(QMainWindow):
         settings_layout.addWidget(context_group)
 
         # Options
-        options_group = QGroupBox("Options")
-        options_layout = QVBoxLayout(options_group)
+        options_group = CollapsibleGroupBox("Options")
+        options_layout = QVBoxLayout()
+        options_group.setLayout(options_layout)
 
         # Checkboxes in two columns to save vertical space
         checks_grid = QGridLayout()
