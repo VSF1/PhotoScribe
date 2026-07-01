@@ -13,7 +13,7 @@
 # Generate the app-specific password at: https://appleid.apple.com → App-Specific Passwords
 #
 # Requirements: Python 3.10-3.13 (3.14 not yet supported by PyInstaller)
-# Run from the photoscribe/ directory:  ./build_app.sh
+# Run from the photoscribe/ directory: ./build_app.sh
 
 set -e
 
@@ -36,7 +36,7 @@ echo ""
 
 # ── Find a compatible Python (3.10-3.13; PyInstaller doesn't support 3.14 yet) ──
 PYTHON=""
-for v in 3.13 3.12 3.11 3.10; do
+for v in 3.14 3.13 3.12 3.11 3.10; do
     if command -v "python$v" &>/dev/null; then
         PYTHON="python$v"
         break
@@ -46,13 +46,13 @@ if [ -z "$PYTHON" ]; then
     if command -v python3 &>/dev/null; then
         VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
         MINOR=$(echo "$VER" | cut -d. -f2)
-        if [ "$MINOR" -ge 10 ] && [ "$MINOR" -le 13 ]; then
+        if [ "$MINOR" -ge 10 ] && [ "$MINOR" -le 14 ]; then
             PYTHON="python3"
         fi
     fi
 fi
 if [ -z "$PYTHON" ]; then
-    echo -e "${RED}✗ Python 3.10-3.13 required. PyInstaller does not yet support 3.14.${NC}"
+    echo -e "${RED}✗ Python 3.10-3.14 required.${NC}"
     echo "  Install with: brew install python@3.13"
     exit 1
 fi

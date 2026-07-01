@@ -5,7 +5,7 @@
 # This script creates a self-contained executable using PyInstaller and bundles
 # it into a native package for distribution on Linux.
 #
-# Requirements: Python 3.10-3.13
+# Requirements: Python 3.10-3.14
 # Recommended: fpm (for .deb/.rpm builds) -> `gem install fpm`
 # 
 # Usage: ./build_linux.sh [deb|rpm|tar]
@@ -40,9 +40,9 @@ if [ -z "$APP_VERSION" ]; then
 fi
 echo -e "${GREEN}✓${NC} Building version $APP_VERSION"
 
-# ── Find a compatible Python (3.10-3.13) ──
+# ── Find a compatible Python (3.10-3.14) ──
 PYTHON=""
-for v in "3.13" "3.12" "3.11" "3.10"; do
+for v in "3.14" "3.13" "3.12" "3.11" "3.10"; do
     if command -v "python$v" &>/dev/null; then
         PYTHON="python$v"
         break
@@ -52,14 +52,14 @@ if [ -z "$PYTHON" ]; then
     if command -v python3 &>/dev/null; then
         VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
         MINOR=$(echo "$VER" | cut -d. -f2)
-        if [ "$MINOR" -ge 10 ] && [ "$MINOR" -le 13 ]; then
+        if [ "$MINOR" -ge 10 ] && [ "$MINOR" -le 14 ]; then
             PYTHON="python3"
         fi
     fi
 fi
 if [ -z "$PYTHON" ]; then
-    echo -e "${RED}✗ Python 3.10-3.13 required.${NC}"
-    echo "  Install with: sudo apt install python3.13"
+    echo -e "${RED}✗ Python 3.10-3.14 required.${NC}"
+    echo "  Install with: sudo apt install python3.14"
     exit 1
 fi
 PY_VER=$($PYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")

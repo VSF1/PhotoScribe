@@ -204,7 +204,7 @@ To build the macOS app bundle yourself:
 This produces a signed and notarized `dist/PhotoScribe.dmg`. Requires Python 3.10–3.13 and your Apple Developer credentials stored via `xcrun notarytool store-credentials`.
 
 ```bash
-./build_linux.sh
+./build_linux.sh [deb|rpm|tar]
 ```
 This produces a signed and notarized `dist/PhotoScribe.deb` or `dist/PhotoScribe.rpm`. Requires Python 3.10–3.13 and your GPG signing key.
 

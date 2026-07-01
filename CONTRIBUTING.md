@@ -22,7 +22,7 @@ PRs are welcome. Here's how to keep things smooth.
 - **Test your changes.** If you're adding tests (please do), put them in a `tests/` directory.
 - **Match the existing style.** No linters enforced yet, but keep it consistent with what's there.
 - **No new cloud dependencies.** PhotoScribe is local-first by design. Everything runs on the user's machine.
-- **Python 3.10-3.13 compatibility.** Don't use 3.14+ features.
+- **Python 3.10-3.14 compatibility.** Don't use features newer than 3.14.
 
 ## What we'd love help with
 

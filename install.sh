@@ -13,7 +13,7 @@ NC='\033[0m' # No colour
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 MIN_PY="3.10"
-MAX_PY="3.13"
+MAX_PY="3.14"
 
 echo ""
 echo -e "${BOLD}📷 PhotoScribe${NC}"
@@ -55,7 +55,7 @@ check_python_version() {
 }
 
 # Try specific versions first (prefer newest compatible)
-for v in 3.13 3.12 3.11 3.10; do
+for v in 3.14 3.13 3.12 3.11 3.10; do
     if check_python_version "python$v"; then
         break
     fi

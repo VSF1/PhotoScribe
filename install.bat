@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 REM PhotoScribe - Install & Launch Script for Windows
-REM Requires Python 3.10-3.13 (64-bit) installed and in PATH
+REM Requires Python 3.10-3.14 (64-bit) installed and in PATH
 
 echo.
 echo  PhotoScribe
@@ -15,7 +15,7 @@ set "PY_VER="
 REM Try py launcher first (most reliable on Windows)
 where py >nul 2>&1
 if not errorlevel 1 (
-    for %%V in (3.13 3.12 3.11 3.10) do (
+    for %%V in (3.14 3.13 3.12 3.11 3.10) do (
         if not defined PYTHON (
             py -%%V --version >nul 2>&1
             if not errorlevel 1 (
@@ -28,7 +28,7 @@ if not errorlevel 1 (
 
 REM Try versioned python commands
 if not defined PYTHON (
-    for %%V in (3.13 3.12 3.11 3.10) do (
+    for %%V in (3.14 3.13 3.12 3.11 3.10) do (
         if not defined PYTHON (
             where python%%V >nul 2>&1
             if not errorlevel 1 (
@@ -43,7 +43,7 @@ REM Try generic python and check version
 if not defined PYTHON (
     where python >nul 2>&1
     if not errorlevel 1 (
-        for /f "usebackq delims=" %%A in (`python -c "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}') if 10<=v.minor<=13 and v.major==3 else print('BAD')" 2^>nul`) do (
+        for /f "usebackq delims=" %%A in (`python -c "import sys; v=sys.version_info; print(f'{v.major}.{v.minor}') if 10<=v.minor<=14 and v.major==3 else print('BAD')" 2^>nul`) do (
             if "%%A" NEQ "BAD" (
                 set "PYTHON=python"
                 set "PY_VER=%%A"
@@ -53,14 +53,13 @@ if not defined PYTHON (
 )
 
 if not defined PYTHON (
-    echo  [ERROR] No compatible Python found. Need Python 3.10-3.13 ^(64-bit^).
+    echo  [ERROR] No compatible Python found. Need Python 3.10-3.14 ^(64-bit^).
     echo.
     echo  Download Python 3.13 ^(64-bit^) from:
     echo  https://www.python.org/ftp/python/3.13.0/python-3.13.0-amd64.exe
     echo.
     echo  IMPORTANT: Tick "Add python.exe to PATH" during installation.
     echo  The filename must contain "amd64" ^(this means 64-bit, works on Intel too^).
-    echo  Do NOT install Python 3.14 - it is not yet supported.
     echo.
     pause
     exit /b 1
@@ -147,8 +146,8 @@ if errorlevel 1 (
     echo.
     echo  [ERROR] Failed to install dependencies.
     echo  This usually means your Python is the wrong version or 32-bit.
-    echo  Check with: python -c "import struct, sys; print(f'{sys.version_info.major}.{sys.version_info.minor}, {struct.calcsize('P') * 8}-bit')"
-    echo  You need 64-bit Python 3.10-3.13.
+    echo  Check with: python -c "import struct, sys; print(f'{sys.version_info.major}.{sys.version_info.minor}, {struct.calcsize('P')*8}-bit')"
+    echo  You need 64-bit Python 3.10-3.14.
     echo.
     pause
     exit /b 1
