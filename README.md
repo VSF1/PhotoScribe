@@ -207,6 +207,10 @@ The **Windows installer** is built by GitHub Actions on every `v*` tag (`.github
 
 ---
 
+## Support
+
+PhotoScribe is free and open source, and always will be. If it saves you time, you can support ongoing development on **[Patreon](https://www.patreon.com/c/AndyHutchinson)** — entirely optional, and genuinely appreciated. Telling other photographers about it helps just as much.
+
 ## Licence
 
 MIT
