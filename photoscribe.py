@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.4.0"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -317,6 +317,11 @@ class PhotoMetadata:
     title: str = ""
     caption: str = ""
     keywords: list = field(default_factory=list)
+    # When "skip if already present" is on and the file already had a
+    # title/caption, we show (and keep) the existing value rather than the
+    # AI's — these flags let the UI mark it as "kept".
+    title_kept: bool = False
+    caption_kept: bool = False
 
 @dataclass
 class PhotoItem:
@@ -341,7 +346,7 @@ class OllamaWorker(QThread):
 
     def __init__(self, photos, model, prompt, context, ollama_url,
                  keywords_list=None, backend="ollama", max_tokens=2048,
-                 describe_people=True):
+                 describe_people=True, skip_existing=False):
         super().__init__()
         self.photos = photos
         self.model = model
@@ -352,6 +357,7 @@ class OllamaWorker(QThread):
         self.backend = backend  # "ollama" or "openai"
         self.max_tokens = max_tokens
         self.describe_people = describe_people
+        self.skip_existing = skip_existing
         self._cancelled = False
         self.batch_total_time = 0.0
         self.batch_processed = 0
@@ -411,8 +417,9 @@ class OllamaWorker(QThread):
         except Exception as e:
             raise RuntimeError(f"Failed to load image: {e}")
 
-    def _build_prompt(self):
-        """Construct the full prompt with context."""
+    def _build_prompt(self, photo=None):
+        """Construct the full prompt with context (per-photo, so it can weave in
+        any person names already tagged on that specific image)."""
         parts = []
 
         if self.context.strip():
@@ -420,13 +427,41 @@ class OllamaWorker(QThread):
 
         parts.append(self.prompt.strip())
 
+        persons = []
         if self.describe_people:
+            persons = MetadataWriter.read_persons(photo.filepath) if photo else []
+            if persons:
+                parts.append(
+                    "People named in this photo: " + ", ".join(persons) + ". "
+                    "Use these exact names when referring to them in the title and "
+                    "caption, and include them in the keywords. Never invent names. "
+                    "If other people appear who aren't named, refer to them neutrally "
+                    "(e.g. 'another person') without inventing names."
+                )
+            else:
+                parts.append(
+                    "If people are visible in the photo, describe their positions, "
+                    "roles, and actions (e.g. 'bride and groom exchanging rings', "
+                    "'group of hikers on a trail', 'child playing in the sand'). "
+                    "Do not attempt to identify individuals by name. Include "
+                    "people-related terms in the keywords where relevant."
+                )
+
+        # Existing keyword/species tags already on the file (e.g. bird names
+        # from a specialist tagger like SuperPicky). Local generalist vision
+        # models can't ID species reliably, so feed the known tags in as facts.
+        existing_tags = MetadataWriter.read_keywords(photo.filepath) if photo else []
+        if persons:
+            _pers = {p.lower() for p in persons}
+            existing_tags = [t for t in existing_tags if t.lower() not in _pers]
+        if existing_tags:
             parts.append(
-                "If people are visible in the photo, describe their positions, "
-                "roles, and actions (e.g. 'bride and groom exchanging rings', "
-                "'group of hikers on a trail', 'child playing in the sand'). "
-                "Do not attempt to identify individuals by name. Include "
-                "people-related terms in the keywords where relevant."
+                "This photo is already tagged with these subjects: "
+                + ", ".join(existing_tags[:50]) + ". "
+                "These tags are accurate — use the specific ones (species, "
+                "place names, events) in the title and caption where they fit "
+                "what you see, and keep them in the keywords. Don't force in a "
+                "tag that clearly doesn't match the image."
             )
 
         if self.keywords_list:
@@ -536,7 +571,6 @@ class OllamaWorker(QThread):
     def run(self):
         from concurrent.futures import ThreadPoolExecutor
 
-        full_prompt = self._build_prompt()
         call_fn = self._call_openai if self.backend == "openai" else self._call_ollama
 
         # Build list of pending photo indices
@@ -588,6 +622,7 @@ class OllamaWorker(QThread):
                 # Call the AI model with current image
                 try:
                     photo_start = time.monotonic()
+                    full_prompt = self._build_prompt(photo)
                     self.log_message.emit(f"Sending to {self.model}...")
 
                     # Call the model, retrying once if it returns nothing usable.
@@ -637,6 +672,20 @@ class OllamaWorker(QThread):
                             f"Couldn't read metadata — {last_reason}. "
                             f"Try a different model, or increase Keyword density."
                         )
+
+                    # When "skip if already present" is on, the existing
+                    # title/caption is what actually gets written — so show that
+                    # (marked "kept") in Results, not the AI's discarded one.
+                    # (We still generate, because keywords are always produced.)
+                    if self.skip_existing:
+                        e_title, e_caption, _ = \
+                            MetadataWriter.read_existing_metadata(photo.filepath)
+                        if e_title:
+                            meta.title = e_title
+                            meta.title_kept = True
+                        if e_caption:
+                            meta.caption = e_caption
+                            meta.caption_kept = True
 
                     elapsed = time.monotonic() - photo_start
                     per_photo_times.append(elapsed)
@@ -780,6 +829,88 @@ class MetadataWriter:
         except Exception:
             pass
         return "", "", []
+
+    @staticmethod
+    def _sidecar_paths(filepath):
+        """Existing XMP sidecars for a file — both naming conventions."""
+        paths = []
+        base = os.path.splitext(str(filepath))[0]
+        for cand in (base + ".xmp", str(filepath) + ".xmp"):
+            if os.path.isfile(cand) and cand not in paths:
+                paths.append(cand)
+        return paths
+
+    @staticmethod
+    def read_persons(filepath):
+        """Names of people already tagged on the image, read from the file AND
+        any co-located XMP sidecar (HEIC/RAW often keep them there). Sources:
+        Excire FaceTags, IPTC PersonInImage, MWG face-region names. Returns []
+        when nothing is found. Based on @Boui3D's reference in issue #9."""
+        try:
+            exiftool = MetadataWriter.find_exiftool() or "exiftool"
+            targets = [str(filepath)] + MetadataWriter._sidecar_paths(filepath)
+            fields = ["-XMP-excire:all", "-XMP-iptcExt:PersonInImage", "-RegionName"]
+            names, seen = [], set()
+            for tgt in targets:
+                r = _run([exiftool, "-j", "-sep", ", "] + fields + [tgt],
+                         capture_output=True, text=True, timeout=15)
+                if r.returncode != 0 or not r.stdout:
+                    continue
+                try:
+                    data = json.loads(r.stdout)
+                except Exception:
+                    continue
+                if not data:
+                    continue
+                entry = data[0]
+                for key in ("FaceTags", "PersonInImage", "RegionName"):
+                    val = entry.get(key, "")
+                    if isinstance(val, list):
+                        val = ", ".join(str(x) for x in val)
+                    for n in (x.strip() for x in str(val).split(",") if x.strip()):
+                        if n.lower() not in seen:
+                            seen.add(n.lower())
+                            names.append(n)
+            return names
+        except Exception:
+            return []
+
+    @staticmethod
+    def read_keywords(filepath):
+        """Keyword / subject tags already on the image (and any co-located XMP
+        sidecar) — e.g. species names written by a specialist tagger like
+        SuperPicky (birds), or place/event tags. Weaving these into the prompt
+        lets the caption use the real subject ('a Superb Fairywren' instead of
+        'a small bird'), which local generalist vision models can't identify on
+        their own. Returns [] when nothing is found."""
+        try:
+            exiftool = MetadataWriter.find_exiftool() or "exiftool"
+            targets = [str(filepath)] + MetadataWriter._sidecar_paths(filepath)
+            fields = ["-IPTC:Keywords", "-XMP-dc:Subject"]
+            tags, seen = [], set()
+            for tgt in targets:
+                r = _run([exiftool, "-j", "-sep", "\n"] + fields + [tgt],
+                         capture_output=True, text=True, timeout=15)
+                if r.returncode != 0 or not r.stdout:
+                    continue
+                try:
+                    data = json.loads(r.stdout)
+                except Exception:
+                    continue
+                if not data:
+                    continue
+                entry = data[0]
+                for key in ("Keywords", "Subject"):
+                    val = entry.get(key, "")
+                    if isinstance(val, list):
+                        val = "\n".join(str(x) for x in val)
+                    for t in (x.strip() for x in str(val).split("\n") if x.strip()):
+                        if t.lower() not in seen:
+                            seen.add(t.lower())
+                            tags.append(t)
+            return tags
+        except Exception:
+            return []
 
     @staticmethod
     def write_metadata(filepath, metadata: PhotoMetadata, backup=True,
@@ -2041,24 +2172,24 @@ class PhotoScribe(QMainWindow):
         detail_layout.addWidget(self.detail_preview)
 
         # Title
-        title_label = QLabel("TITLE")
-        title_label.setStyleSheet(
+        self.detail_title_label = QLabel("TITLE")
+        self.detail_title_label.setStyleSheet(
             "color: #888; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
-        detail_layout.addWidget(title_label)
+        detail_layout.addWidget(self.detail_title_label)
         self.detail_title = QLineEdit()
         self.detail_title.setPlaceholderText("Title")
         self.detail_title.textChanged.connect(self._on_detail_edited)
         detail_layout.addWidget(self.detail_title)
 
         # Caption
-        caption_label = QLabel("CAPTION")
-        caption_label.setStyleSheet(
+        self.detail_caption_label = QLabel("CAPTION")
+        self.detail_caption_label.setStyleSheet(
             "color: #888; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
-        detail_layout.addWidget(caption_label)
+        detail_layout.addWidget(self.detail_caption_label)
         self.detail_caption = QTextEdit()
         self.detail_caption.setPlaceholderText("Caption / description")
         self.detail_caption.setMinimumHeight(80)
@@ -2839,6 +2970,7 @@ class PhotoScribe(QMainWindow):
             backend=getattr(self, "backend", "ollama"),
             max_tokens=max_tokens_map.get(self.response_length_combo.currentIndex(), 512),
             describe_people=self.describe_people_check.isChecked(),
+            skip_existing=self.skip_existing_check.isChecked(),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.result.connect(self._on_result)
@@ -2989,6 +3121,21 @@ class PhotoScribe(QMainWindow):
         self.detail_title.setText(photo.metadata.title)
         self.detail_caption.setText(photo.metadata.caption)
         self.detail_keywords.setText(", ".join(photo.metadata.keywords))
+        # Mark fields whose existing value was kept (skip-if-present was on)
+        kept_style = (
+            "color: #2e9e5b; font-size: 10px; font-weight: 600; "
+            "letter-spacing: 1px; margin-top: 4px; border: none;"
+        )
+        plain_style = (
+            "color: #888; font-size: 10px; font-weight: 600; "
+            "letter-spacing: 1px; margin-top: 4px; border: none;"
+        )
+        t_kept = getattr(photo.metadata, "title_kept", False)
+        c_kept = getattr(photo.metadata, "caption_kept", False)
+        self.detail_title_label.setText("TITLE · KEPT (already on file)" if t_kept else "TITLE")
+        self.detail_title_label.setStyleSheet(kept_style if t_kept else plain_style)
+        self.detail_caption_label.setText("CAPTION · KEPT (already on file)" if c_kept else "CAPTION")
+        self.detail_caption_label.setStyleSheet(kept_style if c_kept else plain_style)
         kw_count = len(photo.metadata.keywords)
         self.kw_count_label.setText(f"{kw_count} keyword{'s' if kw_count != 1 else ''}")
         self._updating_detail = False
@@ -3545,6 +3692,76 @@ class PhotoScribe(QMainWindow):
                     info["platform"] = "apple_silicon"
                     info["gpu_name"] = "Apple Silicon (shared memory)"
                     info["vram_mb"] = int(info["ram_mb"] * 0.7)
+            except Exception:
+                pass
+
+        # AMD / Intel / other GPUs — only when no NVIDIA or Apple GPU was found.
+        # Cosmetic for the recommender: it shows the user their actual GPU
+        # instead of "None detected", and uses VRAM where we can read it.
+        if not info["gpu_name"]:
+            try:
+                name, vram = None, 0
+                if sys.platform == "win32":
+                    r = _run(["powershell", "-NoProfile", "-Command",
+                              "Get-CimInstance Win32_VideoController | "
+                              "Select-Object Name,AdapterRAM | ConvertTo-Json -Compress"],
+                             capture_output=True, text=True, timeout=10)
+                    if r.returncode == 0 and r.stdout.strip():
+                        data = json.loads(r.stdout)
+                        if isinstance(data, dict):
+                            data = [data]
+                        for gpu in data:
+                            gname = (gpu.get("Name") or "").strip()
+                            try:
+                                gram_mb = int(gpu.get("AdapterRAM") or 0) // (1024 * 1024)
+                            except (ValueError, TypeError):
+                                gram_mb = 0
+                            if gname and gram_mb >= vram:
+                                name, vram = gname, gram_mb
+                        # AdapterRAM is a 32-bit field capped at ~4095 MB, so it
+                        # under-reports larger cards — treat that as unknown and
+                        # let the recommender fall back to system RAM.
+                        if vram >= 4095:
+                            vram = 0
+                elif sys.platform == "darwin":
+                    r = _run(["system_profiler", "SPDisplaysDataType"],
+                             capture_output=True, text=True, timeout=15)
+                    if r.returncode == 0:
+                        for line in r.stdout.split("\n"):
+                            s = line.strip()
+                            m = re.match(r"Chipset Model:\s*(.+)", s)
+                            if m:
+                                name = m.group(1).strip()
+                            m = re.match(r"VRAM.*?:\s*(\d+)\s*(MB|GB)", s)
+                            if m:
+                                v = int(m.group(1))
+                                vram = v * 1024 if m.group(2) == "GB" else v
+                else:
+                    r = _run(["lspci"], capture_output=True, text=True, timeout=10)
+                    if r.returncode == 0:
+                        for line in r.stdout.split("\n"):
+                            if ("VGA compatible controller" in line
+                                    or "3D controller" in line
+                                    or "Display controller" in line):
+                                name = line.split(":", 2)[-1].strip()
+                                break
+                    import glob
+                    for p in glob.glob("/sys/class/drm/card*/device/mem_info_vram_total"):
+                        try:
+                            with open(p) as f:
+                                vram = max(vram, int(f.read().strip()) // (1024 * 1024))
+                        except Exception:
+                            pass
+                if name:
+                    info["gpu_name"] = name
+                    low = name.lower()
+                    info["platform"] = (
+                        "amd" if any(k in low for k in ("amd", "radeon", "ati"))
+                        else "intel" if "intel" in low
+                        else "gpu"
+                    )
+                    if vram > 0:
+                        info["vram_mb"] = vram
             except Exception:
                 pass
 

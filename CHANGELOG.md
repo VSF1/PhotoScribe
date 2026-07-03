@@ -2,6 +2,16 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.4.0] — 2026-07-04
+
+### Added
+- **Person-aware captions.** When "Describe people in photos" is on, PhotoScribe reads any names already tagged on a photo — from `PersonInImage`, MWG face regions, and Excire FaceTags, in the image *and* its co-located XMP sidecar — and weaves them into the title, caption, and keywords ("Andy and his dog on a coastal trail" instead of "a man with a dog"). Only kicks in when names are present; photos with no tags behave as before. Based on [@Boui3D](https://github.com/Boui3D)'s reference in #9.
+- **Species / subject-aware captions.** PhotoScribe now reads keyword and subject tags already on a file (and its XMP sidecar) — e.g. bird names written by a specialist tagger like SuperPicky — and feeds them to the model as facts. Local generalist vision models can't reliably identify a species, so the caption can now say "a Superb Fairywren perched in reeds" instead of "a small bird". Off when there are no existing tags.
+- **"Kept" title/caption shown in Results.** With "Skip title/caption if file already has them" turned on, the Results panel now shows the *existing* title/caption (marked **KEPT**) — the value that will actually stay on the file — instead of the AI's discarded suggestion. This clears up the common confusion where it looked like skip wasn't working.
+
+### Changed
+- **Model recommender now detects AMD and Intel GPUs** (Windows/Linux) and Intel-Mac discrete cards, not just NVIDIA and Apple Silicon — so it shows your actual GPU and uses its VRAM where it can read it, instead of always falling back to system RAM.
+
 ## [1.3.4] — 2026-06-30
 
 ### Added
