@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -508,7 +508,9 @@ class OllamaWorker(QThread):
                  for v in self.keywords_list if v and v.strip()}
         out, seen = [], set()
         for kw in raw:
-            kw = (kw or "").strip()
+            # A model may return a numeric keyword (e.g. a year) as a JSON
+            # number — coerce to str so .strip()/.lower() are safe.
+            kw = str(kw).strip() if kw is not None else ""
             if not kw:
                 continue
             final = canon.get(kw.lower(), kw)
@@ -809,6 +811,14 @@ class MetadataWriter:
         return MetadataWriter.find_exiftool() is not None
 
     @staticmethod
+    def _norm_keywords(kws):
+        """Coerce a keyword list to clean, non-empty strings. Guards the write
+        path against numeric keywords (e.g. a year), which arrive as ints from
+        ExifTool's JSON or a model response and would break .lower()/.strip()."""
+        return [str(k).strip() for k in (kws or [])
+                if k is not None and str(k).strip()]
+
+    @staticmethod
     def read_existing_metadata(filepath):
         """Read existing title, caption, keywords across IPTC, XMP and EXIF.
 
@@ -838,9 +848,15 @@ class MetadataWriter:
                     keywords = entry.get("Keywords")
                     if not keywords:
                         keywords = entry.get("Subject") or []
-                    if isinstance(keywords, str):
+                    # ExifTool -j returns a purely-numeric keyword (e.g. a year
+                    # like 2025) as a JSON number, and a single value isn't a
+                    # list. Normalise to a list of non-empty strings so callers
+                    # can safely call .lower()/.strip() on every element.
+                    if not isinstance(keywords, list):
                         keywords = [keywords]
-                    return str(title), str(caption), keywords or []
+                    keywords = [str(k).strip() for k in keywords
+                                if k is not None and str(k).strip()]
+                    return str(title), str(caption), keywords
         except Exception:
             pass
         return "", "", []
@@ -962,10 +978,11 @@ class MetadataWriter:
             args.append(f"-EXIF:ImageDescription={metadata.caption}")
 
         # Keywords: append or replace
+        kw_list = MetadataWriter._norm_keywords(metadata.keywords)
         if append_keywords:
             existing_lower = {k.lower() for k in existing_keywords}
             new_keywords = [
-                kw for kw in metadata.keywords
+                kw for kw in kw_list
                 if kw.lower() not in existing_lower
             ]
             for kw in new_keywords:
@@ -984,7 +1001,7 @@ class MetadataWriter:
             _run(clear_args, capture_output=True, text=True, timeout=15)
 
             # Now add the new keywords
-            for kw in metadata.keywords:
+            for kw in kw_list:
                 args.append(f"-IPTC:Keywords+={kw}")
                 args.append(f"-XMP:Subject+={kw}")
 
@@ -1019,9 +1036,10 @@ class MetadataWriter:
         if not (skip_existing and existing_caption):
             args.append(f"-XMP-dc:Description={metadata.caption}")
 
+        kw_list = MetadataWriter._norm_keywords(metadata.keywords)
         if append_keywords:
             existing_lower = {k.lower() for k in existing_keywords}
-            for kw in metadata.keywords:
+            for kw in kw_list:
                 if kw.lower() not in existing_lower:
                     args.append(f"-XMP-dc:Subject+={kw}")
         else:
@@ -1033,7 +1051,7 @@ class MetadataWriter:
                     [exiftool, "-overwrite_original", "-XMP-dc:Subject=", str(xmp_path)],
                     capture_output=True, text=True, timeout=15
                 )
-            for kw in metadata.keywords:
+            for kw in kw_list:
                 args.append(f"-XMP-dc:Subject+={kw}")
 
         # Nothing left to write (everything skipped) — leave the sidecar as-is
