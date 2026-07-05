@@ -2,6 +2,11 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.4.1] — 2026-07-04
+
+### Fixed
+- **Stop the model inventing specific names it can't know.** On subjects like landmarks or bridges, small vision models would confabulate a plausible-but-wrong proper name to fill the gap — and pick a different one for each near-identical frame (four burst photos of one bridge → four different, mostly-wrong bridge names). PhotoScribe now instructs the model to only name specifics that are given in the context/tags or clearly legible in the image, and to stay generic ("a bridge over a river") when it isn't sure — better general and correct than specific and wrong. Setting the **Location** field gives it a real place name to anchor to. Reported by @Zoolander06 in #15.
+
 ## [1.4.0] — 2026-07-04
 
 ### Added

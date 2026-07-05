@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -470,6 +470,21 @@ class OllamaWorker(QThread):
                 f"\nWhen generating keywords, prefer terms from this vocabulary "
                 f"where applicable: {vocab}"
             )
+
+        # Anti-confabulation: small vision models will happily invent a
+        # plausible-but-wrong proper noun (a specific bridge/landmark/street
+        # name) to fill a gap, and pick a different one each frame. Only let
+        # them name specifics that are given above or legible in the image;
+        # otherwise stay generic. Better general-and-right than specific-and-wrong.
+        parts.append(
+            "Only state a specific proper name — of a person, place, landmark, "
+            "street, building, event, or species — when it is given in the "
+            "information above or clearly legible in the image (e.g. on a sign). "
+            "Never guess or invent one. When you are not certain of a specific "
+            "name, describe it generically instead (e.g. 'a bridge over a river', "
+            "'a historic building', 'a city street') rather than naming it. It is "
+            "better to be general and correct than specific and wrong."
+        )
 
         parts.append(
             "\nRespond ONLY with valid JSON in this exact format, no other text:\n"
