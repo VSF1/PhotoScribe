@@ -2,6 +2,14 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.5.0] — 2026-07-06
+
+### Changed
+- **Much faster metadata writing.** Writing a folder now uses a single persistent ExifTool process (`-stay_open` batch mode) instead of launching a new one per photo — roughly **3× faster** on large folders (measured 47 photos in 33s vs 102s), and on Windows it no longer steals window focus for every file. Skip-existing, append-keywords, and replace all behave exactly as before, including the numeric-keyword handling from 1.4.2. RAW/XMP-sidecar files are still written individually. Contributed by [@bridgew99](https://github.com/bridgew99) (#16), closing the batch-writing request in #13.
+
+### Internal
+- Added tests covering the batch write worker across replace/append/skip, plus the metadata read/write path generally (`tests/test_metadata.py`).
+
 ## [1.4.2] — 2026-07-05
 
 ### Fixed

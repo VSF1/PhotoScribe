@@ -8,6 +8,7 @@ the v1.4.2 numeric-keyword crash ('int' object has no attribute 'lower').
 The write tests are light integration tests against a real ExifTool (skipped
 if it isn't available); the rest are pure units, some using a stubbed _run.
 """
+import os
 import sys
 import json
 from pathlib import Path
@@ -17,7 +18,8 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import photoscribe
-from photoscribe import MetadataWriter, OllamaWorker, PhotoMetadata, PhotoItem
+from photoscribe import (MetadataWriter, OllamaWorker, MetadataWriteWorker,
+                         PhotoMetadata, PhotoItem)
 
 
 HAVE_EXIFTOOL = MetadataWriter.find_exiftool() is not None
@@ -47,6 +49,14 @@ def make_worker(**kw):
 def make_jpeg(path):
     Image.new("RGB", (32, 32), (100, 140, 180)).save(str(path), "JPEG")
     return path
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """A QApplication for tests that instantiate QThread workers."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
 
 
 # ── _norm_keywords ────────────────────────────────────────────────
@@ -232,3 +242,55 @@ class TestWriteSidecar:
         _, _, kws = MetadataWriter.read_existing_metadata(str(sidecar))
         low = [k.lower() for k in kws]
         assert "2025" in low and "beach" in low and "ocean" in low
+
+
+@needs_exiftool
+class TestBatchWriteWorker:
+    """Drive MetadataWriteWorker.run() (the -stay_open batch path) directly.
+
+    run() executes synchronously here (we call it, not start()), so no event
+    loop is needed — we just assert the on-disk result. The `qapp` fixture
+    provides a QApplication for QThread/Signal machinery.
+    """
+    @pytest.fixture(autouse=True)
+    def _use_qapp(self, qapp):
+        pass
+
+    def _seed(self, path, args):
+        make_jpeg(path)
+        photoscribe._run(
+            [MetadataWriter.find_exiftool(), "-overwrite_original", *args, str(path)],
+            capture_output=True, text=True)
+        return path
+
+    def _kws(self, path):
+        _, _, k = MetadataWriter.read_existing_metadata(str(path))
+        return sorted(k)
+
+    def test_replace_clears_old_keywords(self, tmp_path):
+        # Regression for the PR #16 fix: replace mode must clear existing
+        # keywords, not accumulate them (the += bug left old ones behind).
+        f = self._seed(tmp_path / "r.jpg",
+                       ["-IPTC:Keywords=old1", "-IPTC:Keywords=old2"])
+        MetadataWriteWorker(
+            [(str(f), PhotoMetadata(title="T", caption="C",
+                                    keywords=["new1", "new2"]))],
+            backup=False, append_keywords=False).run()
+        assert self._kws(f) == ["new1", "new2"]
+
+    def test_append_preserves_numeric_existing(self, tmp_path):
+        f = self._seed(tmp_path / "a.jpg",
+                       ["-IPTC:Keywords=2025", "-IPTC:Keywords=beach"])
+        MetadataWriteWorker(
+            [(str(f), PhotoMetadata(title="T", caption="C",
+                                    keywords=["ocean", "beach"]))],
+            backup=False, append_keywords=True).run()
+        assert self._kws(f) == ["2025", "beach", "ocean"]
+
+    def test_skip_existing_preserves_title(self, tmp_path):
+        f = self._seed(tmp_path / "s.jpg", ["-IPTC:ObjectName=Keep Me"])
+        MetadataWriteWorker(
+            [(str(f), PhotoMetadata(title="AI", caption="C", keywords=["k"]))],
+            backup=False, append_keywords=True, skip_existing=True).run()
+        title, _, _ = MetadataWriter.read_existing_metadata(str(f))
+        assert title == "Keep Me"
