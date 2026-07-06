@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -629,6 +629,24 @@ class OllamaWorker(QThread):
                         fallback = data
         return fallback
 
+    # JSON schema for structured output (LM Studio / OpenAI json_schema mode).
+    # Grammar-constrains decoding so the model can only emit this shape — this
+    # is what stops smaller models "thinking out loud" in prose instead of
+    # returning JSON. The tolerant parser stays as a secondary safety net.
+    _JSON_SCHEMA = {
+        "name": "photo_metadata",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "caption": {"type": "string"},
+                "keywords": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["title", "caption", "keywords"],
+        },
+    }
+
     def _call_ollama(self, img_b64, full_prompt):
         """Ollama /api/chat format."""
         payload = {
@@ -645,17 +663,25 @@ class OllamaWorker(QThread):
                 }
             ],
             "stream": False,
+            # Constrain output to our schema (Ollama structured outputs). Stops
+            # the model returning a prose/bulleted plan instead of JSON.
+            "format": self._JSON_SCHEMA["schema"],
             "options": {
                 "temperature": 0.3,
                 "num_predict": self.max_tokens,
             },
             "think": False,
         }
-        resp = requests.post(
-            f"{self.ollama_url}/api/chat",
-            json=payload,
-            timeout=180
-        )
+        url = f"{self.ollama_url}/api/chat"
+        resp = requests.post(url, json=payload, timeout=180)
+        # Fall back gracefully if the server rejects the schema in `format`
+        # (older Ollama): retry with plain "json", then with no constraint.
+        if resp.status_code >= 400:
+            payload["format"] = "json"
+            resp = requests.post(url, json=payload, timeout=180)
+            if resp.status_code >= 400:
+                payload.pop("format", None)
+                resp = requests.post(url, json=payload, timeout=180)
         resp.raise_for_status()
         return resp.json().get("message", {}).get("content", "")
 
@@ -682,12 +708,20 @@ class OllamaWorker(QThread):
             "max_tokens": self.max_tokens,
             "stream": False,
             "think": False,
+            # Structured output — LM Studio grammar-constrains the model to
+            # this schema, so it can't return a prose/bulleted plan. (LM Studio
+            # wants json_schema, not the OpenAI json_object type.)
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": self._JSON_SCHEMA,
+            },
         }
-        resp = requests.post(
-            f"{self.ollama_url}/v1/chat/completions",
-            json=payload,
-            timeout=180
-        )
+        url = f"{self.ollama_url}/v1/chat/completions"
+        resp = requests.post(url, json=payload, timeout=180)
+        # Fall back if the backend doesn't support json_schema response_format
+        if resp.status_code == 400 and "response_format" in resp.text:
+            payload.pop("response_format", None)
+            resp = requests.post(url, json=payload, timeout=180)
         resp.raise_for_status()
         msg = resp.json()["choices"][0]["message"]
         # Gemma 4 thinking models may return content in reasoning_content

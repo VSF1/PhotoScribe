@@ -2,6 +2,11 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.5.2] — 2026-07-06
+
+### Fixed
+- **Models are now forced to return JSON, so "couldn't read metadata" failures should essentially stop.** Some models (e.g. Gemma via LM Studio) would occasionally reply with a bulleted "thinking" plan and never actually produce the JSON — which no amount of parsing can recover. PhotoScribe now uses the backend's structured-output mode (LM Studio / OpenAI `json_schema`, Ollama schema `format`) to grammar-constrain the reply to the required `{title, caption, keywords}` shape, so the model can't wander off into prose. Falls back gracefully if a backend doesn't support it, and the tolerant parser from 1.5.1 remains as a safety net. Verified against Gemma-4-12B in LM Studio.
+
 ## [1.5.1] — 2026-07-06
 
 ### Fixed

@@ -161,6 +161,73 @@ class TestParseResponse:
         assert self.w()._parse_response("") is None
 
 
+# ── Structured output on the backend calls (mocked network) ───────
+
+class _Resp:
+    def __init__(self, status=200, text="", payload=None):
+        self.status_code = status
+        self.text = text
+        self._payload = payload or {"choices": [{"message": {"content": "{}"}}],
+                                    "message": {"content": "{}"}}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+class TestStructuredOutput:
+    def _worker(self, backend):
+        return OllamaWorker(photos=[], model="m", prompt="p", context="",
+                            ollama_url="http://x", keywords_list=[],
+                            backend=backend)
+
+    def test_openai_requests_json_schema(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(photoscribe.requests, "post",
+                            lambda url, json=None, timeout=None: (seen.append(json), _Resp())[1])
+        self._worker("openai")._call_openai("imgb64", "prompt")
+        rf = seen[0].get("response_format")
+        assert rf["type"] == "json_schema"
+        assert rf["json_schema"]["schema"]["required"] == ["title", "caption", "keywords"]
+
+    def test_openai_falls_back_when_unsupported(self, monkeypatch):
+        seen = []
+
+        def post(url, json=None, timeout=None):
+            seen.append(json)
+            if "response_format" in json:
+                return _Resp(status=400, text="'response_format.type' must be json_schema")
+            return _Resp()
+        monkeypatch.setattr(photoscribe.requests, "post", post)
+        self._worker("openai")._call_openai("img", "p")
+        assert len(seen) == 2 and "response_format" not in seen[1]
+
+    def test_ollama_requests_format_schema(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(photoscribe.requests, "post",
+                            lambda url, json=None, timeout=None: (seen.append(json), _Resp())[1])
+        self._worker("ollama")._call_ollama("img", "p")
+        fmt = seen[0].get("format")
+        assert isinstance(fmt, dict) and fmt["required"] == ["title", "caption", "keywords"]
+
+    def test_ollama_falls_back_to_json_then_plain(self, monkeypatch):
+        seen = []
+
+        def post(url, json=None, timeout=None):
+            seen.append(json.get("format"))
+            # reject the schema (dict) with 400, accept "json"
+            if isinstance(json.get("format"), dict):
+                return _Resp(status=400)
+            return _Resp()
+        monkeypatch.setattr(photoscribe.requests, "post", post)
+        self._worker("ollama")._call_ollama("img", "p")
+        assert seen[0] and isinstance(seen[0], dict)   # first: schema
+        assert seen[1] == "json"                       # fallback: plain json mode
+
+
 # ── read_existing_metadata (stubbed _run) ─────────────────────────
 
 class TestReadExistingMetadata:
