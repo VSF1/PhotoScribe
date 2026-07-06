@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -521,6 +521,114 @@ class OllamaWorker(QThread):
             out.append(final)
         return out
 
+    # ── Response parsing (tolerant of small-model malformations) ──
+
+    @staticmethod
+    def _json_candidates(text):
+        """Yield every brace-balanced {...} substring in a model response, in
+        order. A ```json fenced block (if any) is tried first. Scanning all
+        objects — not just the first '{' — means a stray brace in a 'thinking'
+        preamble can't hide the real JSON that follows."""
+        if not text:
+            return
+        seen = set()
+
+        def scan(s):
+            i, n = 0, len(s)
+            while i < n:
+                if s[i] != "{":
+                    i += 1
+                    continue
+                depth, in_str, esc = 0, False, False
+                for j in range(i, n):
+                    c = s[j]
+                    if in_str:
+                        if esc:
+                            esc = False
+                        elif c == "\\":
+                            esc = True
+                        elif c == '"':
+                            in_str = False
+                    elif c == '"':
+                        in_str = True
+                    elif c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            cand = s[i:j + 1]
+                            if cand not in seen:
+                                seen.add(cand)
+                                yield cand
+                            i = j + 1
+                            break
+                else:
+                    # Unbalanced from here (truncated) — last resort span
+                    end = s.rfind("}")
+                    if end > i:
+                        cand = s[i:end + 1]
+                        if cand not in seen:
+                            seen.add(cand)
+                            yield cand
+                    return
+        s = text.strip()
+        m = re.search(r"```(?:json)?\s*(.*?)```", s, re.DOTALL)
+        if m:
+            yield from scan(m.group(1).strip())
+        yield from scan(s)
+
+    @staticmethod
+    def _repair_json(candidate, quote_bare_arrays=False):
+        """Conservative structural cleanups for near-JSON. Removes
+        comments/trailing commas and normalises smart quotes. With
+        quote_bare_arrays, also quotes bare words in an unquoted list
+        (e.g. [gulls, beach] -> ["gulls","beach"]) — last-resort only, as it
+        can touch bracketed text, so it runs after safer attempts fail."""
+        t = candidate
+        t = re.sub(r"/\*.*?\*/", "", t, flags=re.DOTALL)   # /* block */ comments
+        t = re.sub(r"(?m)//.*$", "", t)                     # // line comments
+        t = (t.replace("“", '"').replace("”", '"')  # smart double quotes
+              .replace("‘", "'").replace("’", "'"))  # smart single quotes
+        t = re.sub(r",(\s*[}\]])", r"\1", t)                # trailing commas
+        if quote_bare_arrays:
+            def _q(m):
+                inner = m.group(1).strip()
+                if not inner:
+                    return "[]"
+                parts = [p.strip().replace('"', "") for p in inner.split(",")]
+                return "[" + ",".join(f'"{p}"' for p in parts if p) + "]"
+            # Only arrays with no quotes/braces inside (untouched if already valid)
+            t = re.sub(r"\[([^\[\]{}\"]*?)\]", _q, t)
+        return t
+
+    def _parse_response(self, response_text):
+        """Return a {title, caption, keywords} dict from a model response, or
+        None. Tolerant: for each brace-balanced candidate, try strict JSON,
+        then structural repair, then a Python-literal fallback (single-quoted
+        dicts), then a bare-array repair. Prefer a dict that looks like our
+        metadata (has title/caption/keywords)."""
+        import ast
+        fallback = None
+        for candidate in self._json_candidates(response_text):
+            attempts = [
+                lambda c=candidate: json.loads(c),
+                lambda c=candidate: json.loads(self._repair_json(c)),
+                lambda c=candidate: ast.literal_eval(c),
+                lambda c=candidate: json.loads(
+                    self._repair_json(c, quote_bare_arrays=True)),
+            ]
+            for attempt in attempts:
+                try:
+                    data = attempt()
+                except Exception:
+                    continue
+                if isinstance(data, dict):
+                    if any(k in data for k in ("title", "caption", "keywords")):
+                        return data
+                    if fallback is None:
+                        fallback = data
+        return fallback
+
     def _call_ollama(self, img_b64, full_prompt):
         """Ollama /api/chat format."""
         payload = {
@@ -657,30 +765,24 @@ class OllamaWorker(QThread):
                             f"Response received ({len(response_text)} chars)"
                         )
 
-                        # Strip markdown fences and isolate the JSON object
-                        cleaned = response_text.strip()
-                        if cleaned.startswith("```"):
-                            lines = cleaned.split("\n")
-                            lines = [l for l in lines if not l.strip().startswith("```")]
-                            cleaned = "\n".join(lines).strip()
-                        start = cleaned.find("{")
-                        end = cleaned.rfind("}") + 1
-                        if start >= 0 and end > start:
-                            cleaned = cleaned[start:end]
-
-                        if not cleaned:
+                        if not (response_text or "").strip():
                             last_reason = "the model returned an empty response"
                             continue
-                        try:
-                            data = json.loads(cleaned)
-                        except json.JSONDecodeError as e:
-                            last_reason = f"the response wasn't valid JSON ({e})"
+
+                        data = self._parse_response(response_text)
+                        if data is None:
+                            last_reason = "the response wasn't valid JSON"
+                            # Log the raw response so a failure is diagnosable
+                            snippet = response_text.strip().replace("\n", " ")
+                            if len(snippet) > 800:
+                                snippet = snippet[:800] + "…"
+                            self.log_message.emit(f"Raw response was: {snippet}")
                             continue
 
                         meta = PhotoMetadata(
-                            title=data.get("title", "").strip(),
-                            caption=data.get("caption", "").strip(),
-                            keywords=self._clean_keywords(data.get("keywords", []))
+                            title=str(data.get("title") or "").strip(),
+                            caption=str(data.get("caption") or "").strip(),
+                            keywords=self._clean_keywords(data.get("keywords") or [])
                         )
                         break
 

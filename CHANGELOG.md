@@ -2,6 +2,11 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.5.1] — 2026-07-06
+
+### Fixed
+- **Far fewer "couldn't read metadata" failures.** The model's reply is now parsed much more forgivingly. Previously a photo could fail if the model wrapped its JSON in a "thinking" preamble, used single quotes or smart quotes, left a trailing comma, added `//` comments, or left keywords unquoted (`[gulls, beach]`) — all common with smaller local models. The parser now scans for the real JSON object (ignoring stray braces in surrounding prose) and repairs these common malformations before giving up. When it genuinely can't parse a reply, the raw response is now written to the log so the failure can be diagnosed.
+
 ## [1.5.0] — 2026-07-06
 
 ### Changed

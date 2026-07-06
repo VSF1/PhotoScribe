@@ -98,6 +98,69 @@ class TestCleanKeywords:
         assert w._clean_keywords(["sunset", "beach"]) == ["Sunset", "Beach"]
 
 
+# ── OllamaWorker._parse_response (tolerant JSON) ──────────────────
+
+class TestParseResponse:
+    def w(self):
+        return OllamaWorker(photos=[], model="m", prompt="p", context="",
+                            ollama_url="", keywords_list=[])
+
+    def test_clean_json(self):
+        d = self.w()._parse_response(
+            '{"title":"A","caption":"B","keywords":["x","y"]}')
+        assert d == {"title": "A", "caption": "B", "keywords": ["x", "y"]}
+
+    def test_fenced_block(self):
+        d = self.w()._parse_response(
+            '```json\n{"title":"A","caption":"B","keywords":["x"]}\n```')
+        assert d["title"] == "A"
+
+    def test_reasoning_preamble_with_stray_brace(self):
+        # A 'thinking' dump with a stray {brace} before the real object
+        txt = ('Let me think. The image {shows} gulls.\nJSON:\n'
+               '{"title":"Gulls","caption":"On a beach.","keywords":["gulls"]}\n'
+               'Hope that helps!')
+        d = self.w()._parse_response(txt)
+        assert d["title"] == "Gulls" and d["keywords"] == ["gulls"]
+
+    def test_trailing_commas(self):
+        d = self.w()._parse_response(
+            '{"title":"A","caption":"B","keywords":["x","y",],}')
+        assert d["keywords"] == ["x", "y"]
+
+    def test_single_quoted_dict(self):
+        d = self.w()._parse_response(
+            "{'title':'A','caption':'B','keywords':['x']}")
+        assert d["title"] == "A"
+
+    def test_smart_quotes(self):
+        d = self.w()._parse_response(
+            '{“title”:“A”,“caption”:“B”,'
+            '“keywords”:[“x”]}')
+        assert d["title"] == "A"
+
+    def test_line_comments(self):
+        d = self.w()._parse_response(
+            '{\n"title":"A", // note\n"caption":"B",\n"keywords":["x"]\n}')
+        assert d["caption"] == "B"
+
+    def test_unquoted_keyword_array(self):
+        d = self.w()._parse_response(
+            '{"title":"A","caption":"B","keywords":[gulls, beach]}')
+        assert d["keywords"] == ["gulls", "beach"]
+
+    def test_brackets_in_caption_not_mangled(self):
+        # Valid JSON with brackets inside a string must parse untouched — the
+        # aggressive bare-array repair must not run when strict parse succeeds.
+        d = self.w()._parse_response(
+            '{"title":"A","caption":"Shot [at dusk] here","keywords":["x"]}')
+        assert d["caption"] == "Shot [at dusk] here"
+
+    def test_unrecoverable_returns_none(self):
+        assert self.w()._parse_response("total gibberish, no json") is None
+        assert self.w()._parse_response("") is None
+
+
 # ── read_existing_metadata (stubbed _run) ─────────────────────────
 
 class TestReadExistingMetadata:
