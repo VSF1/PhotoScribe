@@ -14,6 +14,7 @@ import json
 import base64
 import threading
 import time
+import traceback
 import subprocess
 import shutil
 from pathlib import Path
@@ -432,6 +433,9 @@ class OllamaWorker(QThread):
             parts.append(f"Context for this photo: {self.context.strip()}")
 
         if face_tags:
+            # Ensure face_tags is a list before joining
+            if not isinstance(face_tags, list):
+                face_tags = [str(face_tags)]
             names = ", ".join(face_tags)
             parts.append(
                 "Note: This photo contains people tagged as: "
@@ -809,6 +813,7 @@ class OllamaWorker(QThread):
                     face_tags = []
                     if self.use_face_tags:
                         face_tags = MetadataWriter.read_face_tags(photo.filepath)
+                    full_prompt = self._build_prompt(photo=photo)
 
                     full_prompt = self._build_prompt(face_tags=face_tags)
 
@@ -844,7 +849,11 @@ class OllamaWorker(QThread):
                         meta = PhotoMetadata(
                             title=str(data.get("title") or "").strip(),
                             caption=str(data.get("caption") or "").strip(),
-                            keywords=self._clean_keywords(data.get("keywords") or []), extra_keywords=face_tags
+                            keywords=self._clean_keywords(
+                                data.get("keywords") or [],
+                                extra_keywords=MetadataWriter.read_face_tags(photo.filepath)
+                                if self.use_face_tags else []
+                            )
                         )
                         break
 
@@ -877,8 +886,9 @@ class OllamaWorker(QThread):
                     self.log_message.emit("Connection failed — is your AI backend running?")
                     self.result.emit(i, "Cannot connect to AI backend. Check the URL and that it's running.")
                 except Exception as e:
-                    self.log_message.emit(f"Error: {e}")
-                    self.result.emit(i, str(e))
+                    tb_str = traceback.format_exc()
+                    self.log_message.emit(f"Error processing {photo.filename}:\n{tb_str}")
+                    self.result.emit(i, f"Error: {e}")
 
         # Batch timing summary (read by the UI in _on_finished)
         self.batch_total_time = time.monotonic() - batch_start
@@ -1066,6 +1076,8 @@ class MetadataWriter:
                 entry = data[0]
                 for key in ("FaceTags", "PersonInImage", "RegionName"):
                     val = entry.get(key, "")
+                    if val and not isinstance(val, list):
+                        val = [str(val)]
                     if isinstance(val, list):
                         val = ", ".join(str(x) for x in val)
                     for n in (x.strip() for x in str(val).split(",") if x.strip()):
@@ -1103,6 +1115,8 @@ class MetadataWriter:
                 entry = data[0]
                 for key in ("Keywords", "Subject"):
                     val = entry.get(key, "")
+                    if val and not isinstance(val, list):
+                        val = [str(val)]
                     if isinstance(val, list):
                         val = "\n".join(str(x) for x in val)
                     for t in (x.strip() for x in str(val).split("\n") if x.strip()):
