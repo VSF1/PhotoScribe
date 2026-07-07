@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.5.2"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -319,6 +319,11 @@ class PhotoMetadata:
     title: str = ""
     caption: str = ""
     keywords: list = field(default_factory=list)
+    # When "skip if already present" is on and the file already had a
+    # title/caption, we show (and keep) the existing value rather than the
+    # AI's — these flags let the UI mark it as "kept".
+    title_kept: bool = False
+    caption_kept: bool = False
 
 @dataclass
 class PhotoItem:
@@ -344,7 +349,7 @@ class OllamaWorker(QThread):
     def __init__(self, photos, model, prompt, context, ollama_url,
                  api_key=None, keywords_list=None, backend="openai",
                  max_tokens=2048, describe_people=True, use_face_tags=True, timeout=180,
-                 image_size=1024):
+                 image_size=1024, skip_existing=False):
         super().__init__()
         self.photos = photos
         self.model = model
@@ -359,6 +364,7 @@ class OllamaWorker(QThread):
         self.use_face_tags = use_face_tags
         self.timeout = timeout
         self.image_size = image_size
+        self.skip_existing = skip_existing
         self._cancelled = False
         self.batch_total_time = 0.0
         self.batch_processed = 0
@@ -417,8 +423,9 @@ class OllamaWorker(QThread):
         except Exception as e:
             raise RuntimeError(f"Failed to load image: {e}")
 
-    def _build_prompt(self, face_tags=None):
-        """Construct the full prompt with context."""
+    def _build_prompt(self, face_tags=None, photo=None):
+        """Construct the full prompt with context (per-photo, so it can weave in
+        any person names already tagged on that specific image)."""
         parts = []
 
         if self.context.strip():
@@ -434,13 +441,41 @@ class OllamaWorker(QThread):
 
         parts.append(self.prompt.strip())
 
+        persons = []
         if self.describe_people:
+            persons = MetadataWriter.read_persons(photo.filepath) if photo else []
+            if persons:
+                parts.append(
+                    "People named in this photo: " + ", ".join(persons) + ". "
+                    "Use these exact names when referring to them in the title and "
+                    "caption, and include them in the keywords. Never invent names. "
+                    "If other people appear who aren't named, refer to them neutrally "
+                    "(e.g. 'another person') without inventing names."
+                )
+            else:
+                parts.append(
+                    "If people are visible in the photo, describe their positions, "
+                    "roles, and actions (e.g. 'bride and groom exchanging rings', "
+                    "'group of hikers on a trail', 'child playing in the sand'). "
+                    "Do not attempt to identify individuals by name. Include "
+                    "people-related terms in the keywords where relevant."
+                )
+
+        # Existing keyword/species tags already on the file (e.g. bird names
+        # from a specialist tagger like SuperPicky). Local generalist vision
+        # models can't ID species reliably, so feed the known tags in as facts.
+        existing_tags = MetadataWriter.read_keywords(photo.filepath) if photo else []
+        if persons:
+            _pers = {p.lower() for p in persons}
+            existing_tags = [t for t in existing_tags if t.lower() not in _pers]
+        if existing_tags:
             parts.append(
-                "If people are visible in the photo, describe their positions, "
-                "roles, and actions (e.g. 'bride and groom exchanging rings', "
-                "'group of hikers on a trail', 'child playing in the sand'). "
-                "Do not attempt to identify individuals by name. Include "
-                "people-related terms in the keywords where relevant."
+                "This photo is already tagged with these subjects: "
+                + ", ".join(existing_tags[:50]) + ". "
+                "These tags are accurate — use the specific ones (species, "
+                "place names, events) in the title and caption where they fit "
+                "what you see, and keep them in the keywords. Don't force in a "
+                "tag that clearly doesn't match the image."
             )
 
         if self.keywords_list:
@@ -449,6 +484,21 @@ class OllamaWorker(QThread):
                 f"\nWhen generating keywords, prefer terms from this vocabulary "
                 f"where applicable: {vocab}"
             )
+
+        # Anti-confabulation: small vision models will happily invent a
+        # plausible-but-wrong proper noun (a specific bridge/landmark/street
+        # name) to fill a gap, and pick a different one each frame. Only let
+        # them name specifics that are given above or legible in the image;
+        # otherwise stay generic. Better general-and-right than specific-and-wrong.
+        parts.append(
+            "Only state a specific proper name — of a person, place, landmark, "
+            "street, building, event, or species — when it is given in the "
+            "information above or clearly legible in the image (e.g. on a sign). "
+            "Never guess or invent one. When you are not certain of a specific "
+            "name, describe it generically instead (e.g. 'a bridge over a river', "
+            "'a historic building', 'a city street') rather than naming it. It is "
+            "better to be general and correct than specific and wrong."
+        )
 
         parts.append(
             "\nRespond ONLY with valid JSON in this exact format, no other text:\n"
@@ -473,7 +523,9 @@ class OllamaWorker(QThread):
         all_kws = (extra_keywords or []) + raw
         out, seen = [], set() #
         for kw in raw:
-            kw = (kw or "").strip()
+            # A model may return a numeric keyword (e.g. a year) as a JSON
+            # number — coerce to str so .strip()/.lower() are safe.
+            kw = str(kw).strip() if kw is not None else ""
             if not kw:
                 continue
             final = canon.get(kw.lower(), kw)
@@ -489,6 +541,132 @@ class OllamaWorker(QThread):
                     seen.add(kw.lower())
                     out.append(kw)
         return out
+
+    # ── Response parsing (tolerant of small-model malformations) ──
+
+    @staticmethod
+    def _json_candidates(text):
+        """Yield every brace-balanced {...} substring in a model response, in
+        order. A ```json fenced block (if any) is tried first. Scanning all
+        objects — not just the first '{' — means a stray brace in a 'thinking'
+        preamble can't hide the real JSON that follows."""
+        if not text:
+            return
+        seen = set()
+
+        def scan(s):
+            i, n = 0, len(s)
+            while i < n:
+                if s[i] != "{":
+                    i += 1
+                    continue
+                depth, in_str, esc = 0, False, False
+                for j in range(i, n):
+                    c = s[j]
+                    if in_str:
+                        if esc:
+                            esc = False
+                        elif c == "\\":
+                            esc = True
+                        elif c == '"':
+                            in_str = False
+                    elif c == '"':
+                        in_str = True
+                    elif c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            cand = s[i:j + 1]
+                            if cand not in seen:
+                                seen.add(cand)
+                                yield cand
+                            i = j + 1
+                            break
+                else:
+                    # Unbalanced from here (truncated) — last resort span
+                    end = s.rfind("}")
+                    if end > i:
+                        cand = s[i:end + 1]
+                        if cand not in seen:
+                            seen.add(cand)
+                            yield cand
+                    return
+        s = text.strip()
+        m = re.search(r"```(?:json)?\s*(.*?)```", s, re.DOTALL)
+        if m:
+            yield from scan(m.group(1).strip())
+        yield from scan(s)
+
+    @staticmethod
+    def _repair_json(candidate, quote_bare_arrays=False):
+        """Conservative structural cleanups for near-JSON. Removes
+        comments/trailing commas and normalises smart quotes. With
+        quote_bare_arrays, also quotes bare words in an unquoted list
+        (e.g. [gulls, beach] -> ["gulls","beach"]) — last-resort only, as it
+        can touch bracketed text, so it runs after safer attempts fail."""
+        t = candidate
+        t = re.sub(r"/\*.*?\*/", "", t, flags=re.DOTALL)   # /* block */ comments
+        t = re.sub(r"(?m)//.*$", "", t)                     # // line comments
+        t = (t.replace("“", '"').replace("”", '"')  # smart double quotes
+              .replace("‘", "'").replace("’", "'"))  # smart single quotes
+        t = re.sub(r",(\s*[}\]])", r"\1", t)                # trailing commas
+        if quote_bare_arrays:
+            def _q(m):
+                inner = m.group(1).strip()
+                if not inner:
+                    return "[]"
+                parts = [p.strip().replace('"', "") for p in inner.split(",")]
+                return "[" + ",".join(f'"{p}"' for p in parts if p) + "]"
+            # Only arrays with no quotes/braces inside (untouched if already valid)
+            t = re.sub(r"\[([^\[\]{}\"]*?)\]", _q, t)
+        return t
+
+    def _parse_response(self, response_text):
+        """Return a {title, caption, keywords} dict from a model response, or
+        None. Tolerant: for each brace-balanced candidate, try strict JSON,
+        then structural repair, then a Python-literal fallback (single-quoted
+        dicts), then a bare-array repair. Prefer a dict that looks like our
+        metadata (has title/caption/keywords)."""
+        import ast
+        fallback = None
+        for candidate in self._json_candidates(response_text):
+            attempts = [
+                lambda c=candidate: json.loads(c),
+                lambda c=candidate: json.loads(self._repair_json(c)),
+                lambda c=candidate: ast.literal_eval(c),
+                lambda c=candidate: json.loads(
+                    self._repair_json(c, quote_bare_arrays=True)),
+            ]
+            for attempt in attempts:
+                try:
+                    data = attempt()
+                except Exception:
+                    continue
+                if isinstance(data, dict):
+                    if any(k in data for k in ("title", "caption", "keywords")):
+                        return data
+                    if fallback is None:
+                        fallback = data
+        return fallback
+
+    # JSON schema for structured output (LM Studio / OpenAI json_schema mode).
+    # Grammar-constrains decoding so the model can only emit this shape — this
+    # is what stops smaller models "thinking out loud" in prose instead of
+    # returning JSON. The tolerant parser stays as a secondary safety net.
+    _JSON_SCHEMA = {
+        "name": "photo_metadata",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "caption": {"type": "string"},
+                "keywords": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["title", "caption", "keywords"],
+        },
+    }
 
     def _call_ollama(self, img_b64, full_prompt):
         """Ollama /api/chat format."""
@@ -510,6 +688,9 @@ class OllamaWorker(QThread):
                 }
             ],
             "stream": False,
+            # Constrain output to our schema (Ollama structured outputs). Stops
+            # the model returning a prose/bulleted plan instead of JSON.
+            "format": self._JSON_SCHEMA["schema"],
             "options": {
                 "temperature": 0.3,
                 "num_predict": self.max_tokens,
@@ -621,6 +802,7 @@ class OllamaWorker(QThread):
                 # Call the AI model with current image
                 try:
                     photo_start = time.monotonic()
+                    full_prompt = self._build_prompt(photo)
                     self.log_message.emit(f"Sending to {self.model}...")
 
                     # Read face tags if enabled
@@ -645,30 +827,24 @@ class OllamaWorker(QThread):
                             f"Response received ({len(response_text)} chars)"
                         )
 
-                        # Strip markdown fences and isolate the JSON object
-                        cleaned = response_text.strip()
-                        if cleaned.startswith("```"):
-                            lines = cleaned.split("\n")
-                            lines = [l for l in lines if not l.strip().startswith("```")]
-                            cleaned = "\n".join(lines).strip()
-                        start = cleaned.find("{")
-                        end = cleaned.rfind("}") + 1
-                        if start >= 0 and end > start:
-                            cleaned = cleaned[start:end]
-
-                        if not cleaned:
+                        if not (response_text or "").strip():
                             last_reason = "the model returned an empty response"
                             continue
-                        try:
-                            data = json.loads(cleaned)
-                        except json.JSONDecodeError as e:
-                            last_reason = f"the response wasn't valid JSON ({e})"
+
+                        data = self._parse_response(response_text)
+                        if data is None:
+                            last_reason = "the response wasn't valid JSON"
+                            # Log the raw response so a failure is diagnosable
+                            snippet = response_text.strip().replace("\n", " ")
+                            if len(snippet) > 800:
+                                snippet = snippet[:800] + "…"
+                            self.log_message.emit(f"Raw response was: {snippet}")
                             continue
 
                         meta = PhotoMetadata(
-                            title=data.get("title", "").strip(),
-                            caption=data.get("caption", "").strip(),
-                            keywords=self._clean_keywords(data.get("keywords", []), extra_keywords=face_tags)
+                            title=str(data.get("title") or "").strip(),
+                            caption=str(data.get("caption") or "").strip(),
+                            keywords=self._clean_keywords(data.get("keywords") or []), extra_keywords=face_tags
                         )
                         break
 
@@ -677,6 +853,20 @@ class OllamaWorker(QThread):
                             f"Couldn't read metadata — {last_reason}. "
                             f"Try a different model, or increase Keyword density."
                         )
+
+                    # When "skip if already present" is on, the existing
+                    # title/caption is what actually gets written — so show that
+                    # (marked "kept") in Results, not the AI's discarded one.
+                    # (We still generate, because keywords are always produced.)
+                    if self.skip_existing:
+                        e_title, e_caption, _ = \
+                            MetadataWriter.read_existing_metadata(photo.filepath)
+                        if e_title:
+                            meta.title = e_title
+                            meta.title_kept = True
+                        if e_caption:
+                            meta.caption = e_caption
+                            meta.caption_kept = True
 
                     elapsed = time.monotonic() - photo_start
                     per_photo_times.append(elapsed)
@@ -769,6 +959,12 @@ class MetadataWriter:
             if os.path.isfile(bundled):
                 return bundled
 
+        # Check next to this script (dev / source installs)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        local_exe = os.path.join(script_dir, exe)
+        if os.path.isfile(local_exe):
+            return local_exe
+
         found = shutil.which("exiftool")
         if found:
             return found
@@ -783,6 +979,14 @@ class MetadataWriter:
     @staticmethod
     def check_exiftool():
         return MetadataWriter.find_exiftool() is not None
+
+    @staticmethod
+    def _norm_keywords(kws):
+        """Coerce a keyword list to clean, non-empty strings. Guards the write
+        path against numeric keywords (e.g. a year), which arrive as ints from
+        ExifTool's JSON or a model response and would break .lower()/.strip()."""
+        return [str(k).strip() for k in (kws or [])
+                if k is not None and str(k).strip()]
 
     @staticmethod
     def read_existing_metadata(filepath):
@@ -814,12 +1018,100 @@ class MetadataWriter:
                     keywords = entry.get("Keywords")
                     if not keywords:
                         keywords = entry.get("Subject") or []
-                    if isinstance(keywords, str):
+                    # ExifTool -j returns a purely-numeric keyword (e.g. a year
+                    # like 2025) as a JSON number, and a single value isn't a
+                    # list. Normalise to a list of non-empty strings so callers
+                    # can safely call .lower()/.strip() on every element.
+                    if not isinstance(keywords, list):
                         keywords = [keywords]
-                    return str(title), str(caption), keywords or []
+                    keywords = [str(k).strip() for k in keywords
+                                if k is not None and str(k).strip()]
+                    return str(title), str(caption), keywords
         except Exception:
             pass
         return "", "", []
+
+    @staticmethod
+    def _sidecar_paths(filepath):
+        """Existing XMP sidecars for a file — both naming conventions."""
+        paths = []
+        base = os.path.splitext(str(filepath))[0]
+        for cand in (base + ".xmp", str(filepath) + ".xmp"):
+            if os.path.isfile(cand) and cand not in paths:
+                paths.append(cand)
+        return paths
+
+    @staticmethod
+    def read_persons(filepath):
+        """Names of people already tagged on the image, read from the file AND
+        any co-located XMP sidecar (HEIC/RAW often keep them there). Sources:
+        Excire FaceTags, IPTC PersonInImage, MWG face-region names. Returns []
+        when nothing is found. Based on @Boui3D's reference in issue #9."""
+        try:
+            exiftool = MetadataWriter.find_exiftool() or "exiftool"
+            targets = [str(filepath)] + MetadataWriter._sidecar_paths(filepath)
+            fields = ["-XMP-excire:all", "-XMP-iptcExt:PersonInImage", "-RegionName"]
+            names, seen = [], set()
+            for tgt in targets:
+                r = _run([exiftool, "-j", "-sep", ", "] + fields + [tgt],
+                         capture_output=True, text=True, timeout=15)
+                if r.returncode != 0 or not r.stdout:
+                    continue
+                try:
+                    data = json.loads(r.stdout)
+                except Exception:
+                    continue
+                if not data:
+                    continue
+                entry = data[0]
+                for key in ("FaceTags", "PersonInImage", "RegionName"):
+                    val = entry.get(key, "")
+                    if isinstance(val, list):
+                        val = ", ".join(str(x) for x in val)
+                    for n in (x.strip() for x in str(val).split(",") if x.strip()):
+                        if n.lower() not in seen:
+                            seen.add(n.lower())
+                            names.append(n)
+            return names
+        except Exception:
+            return []
+
+    @staticmethod
+    def read_keywords(filepath):
+        """Keyword / subject tags already on the image (and any co-located XMP
+        sidecar) — e.g. species names written by a specialist tagger like
+        SuperPicky (birds), or place/event tags. Weaving these into the prompt
+        lets the caption use the real subject ('a Superb Fairywren' instead of
+        'a small bird'), which local generalist vision models can't identify on
+        their own. Returns [] when nothing is found."""
+        try:
+            exiftool = MetadataWriter.find_exiftool() or "exiftool"
+            targets = [str(filepath)] + MetadataWriter._sidecar_paths(filepath)
+            fields = ["-IPTC:Keywords", "-XMP-dc:Subject"]
+            tags, seen = [], set()
+            for tgt in targets:
+                r = _run([exiftool, "-j", "-sep", "\n"] + fields + [tgt],
+                         capture_output=True, text=True, timeout=15)
+                if r.returncode != 0 or not r.stdout:
+                    continue
+                try:
+                    data = json.loads(r.stdout)
+                except Exception:
+                    continue
+                if not data:
+                    continue
+                entry = data[0]
+                for key in ("Keywords", "Subject"):
+                    val = entry.get(key, "")
+                    if isinstance(val, list):
+                        val = "\n".join(str(x) for x in val)
+                    for t in (x.strip() for x in str(val).split("\n") if x.strip()):
+                        if t.lower() not in seen:
+                            seen.add(t.lower())
+                            tags.append(t)
+            return tags
+        except Exception:
+            return []
 
     @staticmethod
     def read_face_tags(filepath: str) -> list[str]:
@@ -890,10 +1182,11 @@ class MetadataWriter:
             args.append(f"-EXIF:ImageDescription={metadata.caption}")
 
         # Keywords: append or replace
+        kw_list = MetadataWriter._norm_keywords(metadata.keywords)
         if append_keywords:
             existing_lower = {k.lower() for k in existing_keywords}
             new_keywords = [
-                kw for kw in metadata.keywords
+                kw for kw in kw_list
                 if kw.lower() not in existing_lower
             ]
             for kw in new_keywords:
@@ -912,7 +1205,7 @@ class MetadataWriter:
             _run(clear_args, capture_output=True, text=True, timeout=15)
 
             # Now add the new keywords
-            for kw in metadata.keywords:
+            for kw in kw_list:
                 args.append(f"-IPTC:Keywords+={kw}")
                 args.append(f"-XMP:Subject+={kw}")
 
@@ -947,9 +1240,10 @@ class MetadataWriter:
         if not (skip_existing and existing_caption):
             args.append(f"-XMP-dc:Description={metadata.caption}")
 
+        kw_list = MetadataWriter._norm_keywords(metadata.keywords)
         if append_keywords:
             existing_lower = {k.lower() for k in existing_keywords}
-            for kw in metadata.keywords:
+            for kw in kw_list:
                 if kw.lower() not in existing_lower:
                     args.append(f"-XMP-dc:Subject+={kw}")
         else:
@@ -1088,7 +1382,12 @@ class MetadataWriter:
 # ─────────────────────────────────────────────────────────
 
 class MetadataWriteWorker(QThread):
-    """Writes metadata to files in a background thread."""
+    """Writes metadata to files in a background thread.
+
+    Uses ExifTool's -stay_open batch mode (single persistent process) for
+    regular files, giving per-file progress callbacks.  Sidecar items are
+    handled individually (they need -o flag logic).
+    """
     progress = Signal(int, int)  # current, total
     file_done = Signal(str, bool, str)  # filename, success, error_msg
     finished_writing = Signal(int, int)  # success_count, error_count
@@ -1108,15 +1407,102 @@ class MetadataWriteWorker(QThread):
         success_count = 0
         error_count = 0
 
-        for i, (filepath, metadata) in enumerate(self.items):
+        exiftool = MetadataWriter.find_exiftool()
+        if not exiftool:
+            for i, (filepath, _) in enumerate(self.items):
+                self.file_done.emit(os.path.basename(filepath), False,
+                                    "ExifTool not found")
+                error_count += 1
+                self.progress.emit(i + 1, total)
+            self.finished_writing.emit(success_count, error_count)
+            return
+
+        # Separate sidecar items from regular items
+        regular_items = []
+        sidecar_items = []
+        for filepath, metadata in self.items:
+            p = Path(filepath)
+            if self.use_sidecar and p.suffix.lower() in RAW_EXTENSIONS:
+                sidecar_items.append((filepath, metadata))
+            else:
+                regular_items.append((filepath, metadata))
+
+        progress_idx = 0
+
+        # ── Process regular items using -stay_open batch mode ──
+        if regular_items:
             try:
-                MetadataWriter.write_metadata(
-                    filepath, metadata,
-                    backup=self.backup,
-                    append_keywords=self.append_keywords,
-                    skip_existing=self.skip_existing,
-                    use_sidecar=self.use_sidecar,
+                proc = _popen(
+                    [exiftool, "-stay_open", "True", "-@", "-"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+
+                for filepath, metadata in regular_items:
+                    try:
+                        arg_lines = self._build_args_for_file(
+                            filepath, metadata, exiftool
+                        )
+                        arg_lines.append(filepath)
+                        arg_lines.append("-execute")
+
+                        proc.stdin.write("\n".join(arg_lines) + "\n")
+                        proc.stdin.flush()
+
+                        # Read exiftool's per-file response (ends with {ready})
+                        output_lines = []
+                        while True:
+                            line = proc.stdout.readline()
+                            if not line:
+                                break
+                            line = line.strip()
+                            if line == "{ready}":
+                                break
+                            output_lines.append(line)
+
+                        output_text = " ".join(output_lines)
+                        if ("error" in output_text.lower()
+                                and "0 image files updated" in output_text):
+                            raise RuntimeError(output_text)
+
+                        success_count += 1
+                        self.file_done.emit(
+                            os.path.basename(filepath), True, "")
+
+                    except Exception as e:
+                        error_count += 1
+                        self.file_done.emit(
+                            os.path.basename(filepath), False, str(e))
+
+                    progress_idx += 1
+                    self.progress.emit(progress_idx, total)
+
+                # Close the batch session
+                proc.stdin.write("-stay_open\nFalse\n")
+                proc.stdin.flush()
+                proc.wait(timeout=30)
+
+            except Exception as e:
+                # If the process itself failed, report remaining files as errors
+                for filepath, _ in regular_items[progress_idx:]:
+                    error_count += 1
+                    self.file_done.emit(
+                        os.path.basename(filepath), False,
+                        f"Batch process error: {e}")
+                    progress_idx += 1
+                    self.progress.emit(progress_idx, total)
+
+        # ── Process sidecar items individually ──
+        for filepath, metadata in sidecar_items:
+            try:
+                MetadataWriter._write_sidecar(
+                    Path(filepath), metadata,
                     adobe_naming=self.adobe_naming,
+                    skip_existing=self.skip_existing,
+                    append_keywords=self.append_keywords,
                 )
                 success_count += 1
                 self.file_done.emit(os.path.basename(filepath), True, "")
@@ -1124,9 +1510,61 @@ class MetadataWriteWorker(QThread):
                 error_count += 1
                 self.file_done.emit(os.path.basename(filepath), False, str(e))
 
-            self.progress.emit(i + 1, total)
+            progress_idx += 1
+            self.progress.emit(progress_idx, total)
 
         self.finished_writing.emit(success_count, error_count)
+
+    def _build_args_for_file(self, filepath, metadata, exiftool):
+        """Build exiftool arg lines for a single file within the batch.
+
+        Does NOT include the filepath or -execute terminator — those are
+        appended by the caller.
+        """
+        arg_lines = []
+
+        if not self.backup:
+            arg_lines.append("-overwrite_original")
+
+        # Read existing metadata if needed for skip/append logic
+        existing_title, existing_caption, existing_keywords = "", "", []
+        if self.skip_existing or self.append_keywords:
+            existing_title, existing_caption, existing_keywords = \
+                MetadataWriter.read_existing_metadata(filepath)
+
+        # Title
+        if not (self.skip_existing and existing_title):
+            arg_lines.append(f"-IPTC:ObjectName={metadata.title}")
+            arg_lines.append(f"-XMP:Title={metadata.title}")
+
+        # Caption
+        if not (self.skip_existing and existing_caption):
+            arg_lines.append(f"-IPTC:Caption-Abstract={metadata.caption}")
+            arg_lines.append(f"-XMP:Description={metadata.caption}")
+            arg_lines.append(f"-EXIF:ImageDescription={metadata.caption}")
+
+        # Keywords
+        kw_list = MetadataWriter._norm_keywords(metadata.keywords)
+        if self.append_keywords:
+            existing_lower = {k.lower() for k in existing_keywords}
+            new_keywords = [
+                kw for kw in kw_list
+                if kw.lower() not in existing_lower
+            ]
+            for kw in new_keywords:
+                arg_lines.append(f"-IPTC:Keywords+={kw}")
+                arg_lines.append(f"-XMP:Subject+={kw}")
+        else:
+            # Replace mode: use plain = for each keyword. ExifTool processes
+            # args in order, so the first = clears the list and subsequent =
+            # assignments append to it within the same -execute block.
+            arg_lines.append("-IPTC:Keywords=")
+            arg_lines.append("-XMP:Subject=")
+            for kw in kw_list:
+                arg_lines.append(f"-IPTC:Keywords={kw}")
+                arg_lines.append(f"-XMP:Subject={kw}")
+
+        return arg_lines
 
 
 # ─────────────────────────────────────────────────────────
@@ -1883,24 +2321,24 @@ class PhotoScribe(QMainWindow):
         detail_layout.addWidget(self.detail_preview)
 
         # Title
-        title_label = QLabel("TITLE")
-        title_label.setStyleSheet(
+        self.detail_title_label = QLabel("TITLE")
+        self.detail_title_label.setStyleSheet(
             "color: #888; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
-        detail_layout.addWidget(title_label)
+        detail_layout.addWidget(self.detail_title_label)
         self.detail_title = QLineEdit()
         self.detail_title.setPlaceholderText("Title")
         self.detail_title.textChanged.connect(self._on_detail_edited)
         detail_layout.addWidget(self.detail_title)
 
         # Caption
-        caption_label = QLabel("CAPTION")
-        caption_label.setStyleSheet(
+        self.detail_caption_label = QLabel("CAPTION")
+        self.detail_caption_label.setStyleSheet(
             "color: #888; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
-        detail_layout.addWidget(caption_label)
+        detail_layout.addWidget(self.detail_caption_label)
         self.detail_caption = QTextEdit()
         self.detail_caption.setPlaceholderText("Caption / description")
         self.detail_caption.setMinimumHeight(80)
@@ -2781,6 +3219,7 @@ class PhotoScribe(QMainWindow):
             use_face_tags=self.face_tags_check.isChecked(),
             timeout=self.timeout_spinbox.value(),
             image_size=image_size_map.get(self.image_size_combo.currentIndex(), 1024),
+            skip_existing=self.skip_existing_check.isChecked(),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.result.connect(self._on_result)
@@ -2931,6 +3370,21 @@ class PhotoScribe(QMainWindow):
         self.detail_title.setText(photo.metadata.title)
         self.detail_caption.setText(photo.metadata.caption)
         self.detail_keywords.setText(", ".join(photo.metadata.keywords))
+        # Mark fields whose existing value was kept (skip-if-present was on)
+        kept_style = (
+            "color: #2e9e5b; font-size: 10px; font-weight: 600; "
+            "letter-spacing: 1px; margin-top: 4px; border: none;"
+        )
+        plain_style = (
+            "color: #888; font-size: 10px; font-weight: 600; "
+            "letter-spacing: 1px; margin-top: 4px; border: none;"
+        )
+        t_kept = getattr(photo.metadata, "title_kept", False)
+        c_kept = getattr(photo.metadata, "caption_kept", False)
+        self.detail_title_label.setText("TITLE · KEPT (already on file)" if t_kept else "TITLE")
+        self.detail_title_label.setStyleSheet(kept_style if t_kept else plain_style)
+        self.detail_caption_label.setText("CAPTION · KEPT (already on file)" if c_kept else "CAPTION")
+        self.detail_caption_label.setStyleSheet(kept_style if c_kept else plain_style)
         kw_count = len(photo.metadata.keywords)
         self.kw_count_label.setText(f"{kw_count} keyword{'s' if kw_count != 1 else ''}")
         self._updating_detail = False
@@ -3076,7 +3530,8 @@ class PhotoScribe(QMainWindow):
         self.progress_bar.setVisible(False)
         self.write_btn.setEnabled(True)
         self.status_label.setText(f"Written: {success_count} OK, {error_count} errors")
-        self._write_worker = None
+        # Defer cleanup — the thread is still winding down when this signal fires
+        QTimer.singleShot(500, lambda: setattr(self, '_write_worker', None))
         QMessageBox.information(
             self, "Complete",
             f"Metadata written to {success_count} file(s).\n"
@@ -3489,6 +3944,146 @@ class PhotoScribe(QMainWindow):
                     info["vram_mb"] = int((info["ram_mb"] or 0) * 0.7) # Use 70% of RAM as effective VRAM
             except Exception:
                 info["vram_mb"] = None # Ensure it's explicitly None on failure
+
+        # AMD / Intel / other GPUs — only when no NVIDIA or Apple GPU was found.
+        # Cosmetic for the recommender: it shows the user their actual GPU
+        # instead of "None detected", and uses VRAM where we can read it.
+        if not info["gpu_name"]:
+            try:
+                name, vram = None, 0
+                if sys.platform == "win32":
+                    r = _run(["powershell", "-NoProfile", "-Command",
+                              "Get-CimInstance Win32_VideoController | "
+                              "Select-Object Name,AdapterRAM | ConvertTo-Json -Compress"],
+                             capture_output=True, text=True, timeout=10)
+                    if r.returncode == 0 and r.stdout.strip():
+                        data = json.loads(r.stdout)
+                        if isinstance(data, dict):
+                            data = [data]
+                        for gpu in data:
+                            gname = (gpu.get("Name") or "").strip()
+                            try:
+                                gram_mb = int(gpu.get("AdapterRAM") or 0) // (1024 * 1024)
+                            except (ValueError, TypeError):
+                                gram_mb = 0
+                            if gname and gram_mb >= vram:
+                                name, vram = gname, gram_mb
+                        # AdapterRAM is a 32-bit field capped at ~4095 MB, so it
+                        # under-reports larger cards — treat that as unknown and
+                        # let the recommender fall back to system RAM.
+                        if vram >= 4095:
+                            vram = 0
+                elif sys.platform == "darwin":
+                    r = _run(["system_profiler", "SPDisplaysDataType"],
+                             capture_output=True, text=True, timeout=15)
+                    if r.returncode == 0:
+                        for line in r.stdout.split("\n"):
+                            s = line.strip()
+                            m = re.match(r"Chipset Model:\s*(.+)", s)
+                            if m:
+                                name = m.group(1).strip()
+                            m = re.match(r"VRAM.*?:\s*(\d+)\s*(MB|GB)", s)
+                            if m:
+                                v = int(m.group(1))
+                                vram = v * 1024 if m.group(2) == "GB" else v
+                else:
+                    r = _run(["lspci"], capture_output=True, text=True, timeout=10)
+                    if r.returncode == 0:
+                        for line in r.stdout.split("\n"):
+                            if ("VGA compatible controller" in line
+                                    or "3D controller" in line
+                                    or "Display controller" in line):
+                                name = line.split(":", 2)[-1].strip()
+                                break
+                    import glob
+                    for p in glob.glob("/sys/class/drm/card*/device/mem_info_vram_total"):
+                        try:
+                            with open(p) as f:
+                                vram = max(vram, int(f.read().strip()) // (1024 * 1024))
+                        except Exception:
+                            pass
+                if name:
+                    info["gpu_name"] = name
+                    low = name.lower()
+                    info["platform"] = (
+                        "amd" if any(k in low for k in ("amd", "radeon", "ati"))
+                        else "intel" if "intel" in low
+                        else "gpu"
+                    )
+                    if vram > 0:
+                        info["vram_mb"] = vram
+            except Exception:
+                info["vram_mb"] = None # Ensure it's explicitly None on failure
+
+        # AMD / Intel / other GPUs — only when no NVIDIA or Apple GPU was found.
+        # Cosmetic for the recommender: it shows the user their actual GPU
+        # instead of "None detected", and uses VRAM where we can read it.
+        if not info["gpu_name"]:
+            try:
+                name, vram = None, 0
+                if sys.platform == "win32":
+                    r = _run(["powershell", "-NoProfile", "-Command",
+                              "Get-CimInstance Win32_VideoController | "
+                              "Select-Object Name,AdapterRAM | ConvertTo-Json -Compress"],
+                             capture_output=True, text=True, timeout=10)
+                    if r.returncode == 0 and r.stdout.strip():
+                        data = json.loads(r.stdout)
+                        if isinstance(data, dict):
+                            data = [data]
+                        for gpu in data:
+                            gname = (gpu.get("Name") or "").strip()
+                            try:
+                                gram_mb = int(gpu.get("AdapterRAM") or 0) // (1024 * 1024)
+                            except (ValueError, TypeError):
+                                gram_mb = 0
+                            if gname and gram_mb >= vram:
+                                name, vram = gname, gram_mb
+                        # AdapterRAM is a 32-bit field capped at ~4095 MB, so it
+                        # under-reports larger cards — treat that as unknown and
+                        # let the recommender fall back to system RAM.
+                        if vram >= 4095:
+                            vram = 0
+                elif sys.platform == "darwin":
+                    r = _run(["system_profiler", "SPDisplaysDataType"],
+                             capture_output=True, text=True, timeout=15)
+                    if r.returncode == 0:
+                        for line in r.stdout.split("\n"):
+                            s = line.strip()
+                            m = re.match(r"Chipset Model:\s*(.+)", s)
+                            if m:
+                                name = m.group(1).strip()
+                            m = re.match(r"VRAM.*?:\s*(\d+)\s*(MB|GB)", s)
+                            if m:
+                                v = int(m.group(1))
+                                vram = v * 1024 if m.group(2) == "GB" else v
+                else:
+                    r = _run(["lspci"], capture_output=True, text=True, timeout=10)
+                    if r.returncode == 0:
+                        for line in r.stdout.split("\n"):
+                            if ("VGA compatible controller" in line
+                                    or "3D controller" in line
+                                    or "Display controller" in line):
+                                name = line.split(":", 2)[-1].strip()
+                                break
+                    import glob
+                    for p in glob.glob("/sys/class/drm/card*/device/mem_info_vram_total"):
+                        try:
+                            with open(p) as f:
+                                vram = max(vram, int(f.read().strip()) // (1024 * 1024))
+                        except Exception:
+                            pass
+                if name:
+                    info["gpu_name"] = name
+                    low = name.lower()
+                    info["platform"] = (
+                        "amd" if any(k in low for k in ("amd", "radeon", "ati"))
+                        else "intel" if "intel" in low
+                        else "gpu"
+                    )
+                    if vram > 0:
+                        info["vram_mb"] = vram
+            except Exception:
+                pass
 
         return info
 
