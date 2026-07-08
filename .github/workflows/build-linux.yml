@@ -1,0 +1,86 @@
+name: Build Linux Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package_type: [deb, rpm, tar]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Set up Ruby for fpm
+        if: matrix.package_type == 'deb' || matrix.package_type == 'rpm'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.1'
+
+      - name: Install fpm
+        if: matrix.package_type == 'deb' || matrix.package_type == 'rpm'
+        run: gem install fpm
+
+      - name: Import GPG key for signing
+        if: matrix.package_type == 'tar' && secrets.GPG_PRIVATE_KEY != ''
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Build package
+        env:
+          # The build script reads this to sign the tar.gz
+          GPG_SIGNING_KEY_ID: ${{ secrets.GPG_SIGNING_KEY_ID }}
+        run: |
+          chmod +x ./build_linux.sh
+          ./build_linux.sh ${{ matrix.package_type }}
+
+      - name: Get package paths
+        id: package_paths
+        run: |
+          if [ "${{ matrix.package_type }}" == "tar" ]; then
+            echo "package_path=$(find dist -name "*.tar.gz")" >> $GITHUB_OUTPUT
+            echo "signature_path=$(find dist -name "*.tar.gz.asc")" >> $GITHUB_OUTPUT
+          else
+            echo "package_path=$(find dist -name "*.${{ matrix.package_type }}")" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: photoscribe-linux-${{ matrix.package_type }}
+          path: ${{ steps.package_paths.outputs.package_path }}
+
+      - name: Upload signature artifact
+        if: matrix.package_type == 'tar' && steps.package_paths.outputs.signature_path
+        uses: actions/upload-artifact@v4
+        with:
+          name: photoscribe-linux-tar-signature
+          path: ${{ steps.package_paths.outputs.signature_path }}
+
+      - name: Attach package to release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} ${{ steps.package_paths.outputs.package_path }} --clobber
+
+      - name: Attach signature to release
+        if: startsWith(github.ref, 'refs/tags/') && matrix.package_type == 'tar' && steps.package_paths.outputs.signature_path
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} ${{ steps.package_paths.outputs.signature_path }} --clobber
