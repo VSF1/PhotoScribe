@@ -2,8 +2,7 @@ name: Build Linux Packages
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*', 'daily-*']
   workflow_dispatch:
 
 permissions:
