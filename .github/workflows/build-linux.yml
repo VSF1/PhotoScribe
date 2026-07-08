@@ -15,6 +15,8 @@ jobs:
     strategy:
       matrix:
         package_type: [deb, rpm, tar]
+    env:
+      GPG_KEY_IS_SET: ${{ secrets.GPG_PRIVATE_KEY != '' }}
 
     steps:
       - name: Checkout
@@ -36,7 +38,7 @@ jobs:
         run: gem install fpm
 
       - name: Import GPG key for signing
-        if: matrix.package_type == 'tar' && secrets.GPG_PRIVATE_KEY != ''
+        if: matrix.package_type == 'tar' && env.GPG_KEY_IS_SET == 'true'
         uses: crazy-max/ghaction-import-gpg@v6
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
