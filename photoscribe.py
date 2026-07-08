@@ -2104,12 +2104,12 @@ class PhotoScribe(QMainWindow):
         prompt = self.settings.value("prompt", "")
         if prompt:
             self.prompt_edit.setText(prompt)
+        # batch settings
         photographer = self.settings.value("photographer", "")
-        self.current_theme = self.settings.value("theme", "dark")
-        self._apply_theme()
         if photographer:
             self.context_fields["ctx_photographer"].setText(photographer)
         backup = self.settings.value("create_backup", "true")
+        # options settings
         self.backup_check.setChecked(backup == "true")
         append_kw = self.settings.value("append_keywords", "false")
         self.append_keywords_check.setChecked(append_kw == "true")
@@ -2129,18 +2129,27 @@ class PhotoScribe(QMainWindow):
         self.image_size_combo.setCurrentIndex(int(image_size))
         response_length = self.settings.value("response_length", "1")
         self.response_length_combo.setCurrentIndex(int(response_length))
+        # keywords
         keywords_vocab = self.settings.value("keywords_vocab", "")
         if keywords_vocab:
             self.keywords_edit.setPlainText(keywords_vocab)
+        # apply theme settings
+        self.current_theme = self.settings.value("theme", "dark")
+        self._apply_theme()
+        # load presets
         self._load_folder_presets()
 
     def _save_settings(self):
+        # Persist settings
+        
+        # LLM settings
         self.settings.setValue("ollama_url", self.ollama_url.text())
         self.settings.setValue("api_key", self.api_key_edit.text())
         self.settings.setValue("timeout", self.timeout_spinbox.value())
         self.settings.setValue("prompt", self.prompt_edit.toPlainText())
-        self.settings.setValue("theme", self.current_theme)
         self.settings.setValue("backend", self.backend)
+
+        # Batch settings
         self.settings.setValue(
             "create_backup",
             "true" if self.backup_check.isChecked() else "false"
@@ -2172,11 +2181,12 @@ class PhotoScribe(QMainWindow):
         self.settings.setValue("sidecar_naming", str(self.sidecar_naming_combo.currentIndex()))
         self.settings.setValue("image_size", str(self.image_size_combo.currentIndex()))
         self.settings.setValue("response_length", str(self.response_length_combo.currentIndex()))
-        self.settings.setValue(
-            "photographer",
-            self.context_fields["ctx_photographer"].text()
-        )
+        # batch context
+        self.settings.setValue("photographer", self.context_fields["ctx_photographer"].text())
+        # keywords
         self.settings.setValue("keywords_vocab", self.keywords_edit.toPlainText())
+        # save current theme
+        self.settings.setValue("theme", self.current_theme)
         self._save_folder_presets()
 
     def closeEvent(self, event):
@@ -2192,6 +2202,7 @@ class PhotoScribe(QMainWindow):
     # ── Logging ──
 
     def log(self, msg):
+        
         self.log_text.appendPlainText(msg)
 
     # ── Model management ──
