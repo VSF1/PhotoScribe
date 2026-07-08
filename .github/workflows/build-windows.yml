@@ -2,8 +2,7 @@ name: Build Windows Installer
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*', 'daily-*']
   workflow_dispatch:
 
 permissions:
