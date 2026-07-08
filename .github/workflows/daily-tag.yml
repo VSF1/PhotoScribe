@@ -28,13 +28,38 @@ jobs:
             echo "TAG_EXISTS=false" >> $GITHUB_ENV
           fi
 
+      - name: Check for new commits since last tag
+        id: check-commits
+        run: |
+          # In case there are no tags yet in the repository
+          if ! git describe --tags --abbrev=0 > /dev/null 2>&1; then
+            echo "No tags found. Assuming changes exist."
+            echo "HAS_CHANGES=true" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          LATEST_TAG=$(git describe --tags --abbrev=0)
+          LATEST_TAG_COMMIT=$(git rev-parse "$LATEST_TAG^{commit}")
+          HEAD_COMMIT=$(git rev-parse HEAD)
+
+          echo "Latest tag is '$LATEST_TAG' at commit $LATEST_TAG_COMMIT"
+          echo "Current HEAD is at commit $HEAD_COMMIT"
+
+          if [ "$LATEST_TAG_COMMIT" == "$HEAD_COMMIT" ]; then
+            echo "No new commits since the last tag. A new daily tag will not be created."
+            echo "HAS_CHANGES=false" >> $GITHUB_ENV
+          else
+            echo "New commits found since the last tag."
+            echo "HAS_CHANGES=true" >> $GITHUB_ENV
+          fi
+
       - name: Configure Git user
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
       - name: Create and push tag
-        if: env.TAG_EXISTS == 'false'
+        if: env.TAG_EXISTS == 'false' && env.HAS_CHANGES == 'true'
         run: |
           echo "Creating tag: $TAG_NAME"
           git tag "$TAG_NAME"
