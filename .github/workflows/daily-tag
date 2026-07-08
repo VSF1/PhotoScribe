@@ -1,0 +1,43 @@
+name: Daily Tag
+on:
+  schedule:
+    - cron: '0 0 * * *' # Runs daily at 00:00 UTC
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate tag name
+        id: generate-tag
+        run: |
+          TAG_NAME="daily-$(date -u +'%Y%m%d')"
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+
+      - name: Check if tag exists
+        id: check-tag
+        run: |
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+            echo "TAG_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "TAG_EXISTS=false" >> $GITHUB_ENV
+          fi
+
+      - name: Configure Git user
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Create and push tag
+        if: env.TAG_EXISTS == 'false'
+        run: |
+          echo "Creating tag: $TAG_NAME"
+          git tag "$TAG_NAME"
+          git push origin "$TAG_NAME"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   
