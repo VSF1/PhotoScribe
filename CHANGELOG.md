@@ -2,6 +2,11 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.5.3] — 2026-07-09
+
+### Added
+- **Regenerate photos after they're already done.** Right-click a photo in the list for **Regenerate this photo** or **Regenerate all photos** — it resets them and runs generation again with your current settings. Previously a processed (green-dot) photo was skipped by Generate with no way to redo it, so changing a setting (e.g. turning on GPS location lookup) meant it wouldn't take effect on already-processed photos. Requested on GitHub.
+
 ## [1.5.2] — 2026-07-06
 
 ### Fixed

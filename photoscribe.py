@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -2027,6 +2027,8 @@ class PhotoScribe(QMainWindow):
         )
         self.photo_table.currentCellChanged.connect(self._on_photo_selected)
         self.photo_table.cellDoubleClicked.connect(self._on_photo_double_clicked)
+        self.photo_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.photo_table.customContextMenuRequested.connect(self._photo_context_menu)
         left_layout.addWidget(self.photo_table, 1)
 
         # Folder name
@@ -2960,6 +2962,38 @@ class PhotoScribe(QMainWindow):
         total = len(self.photos)
         done = sum(1 for p in self.photos if p.status == "done")
         self.photo_count_label.setText(f"{total} photos loaded, {done} processed")
+
+    def _photo_context_menu(self, pos):
+        """Right-click menu on the photo list: regenerate photos (e.g. after
+        changing settings). Resets them to pending so Generate reprocesses."""
+        if not self.photos:
+            return
+        if self.worker and self.worker.isRunning():
+            return  # not while a batch is running
+        row = self.photo_table.rowAt(pos.y())
+        menu = QMenu(self)
+        if 0 <= row < len(self.photos):
+            act = menu.addAction("Regenerate this photo")
+            act.triggered.connect(lambda: self._regenerate_photos([row]))
+        act_all = menu.addAction("Regenerate all photos")
+        act_all.triggered.connect(
+            lambda: self._regenerate_photos(range(len(self.photos))))
+        menu.exec(self.photo_table.viewport().mapToGlobal(pos))
+
+    def _regenerate_photos(self, indices):
+        """Reset the given photos to pending and (re)run generation on them."""
+        if self.worker and self.worker.isRunning():
+            return
+        count = 0
+        for i in indices:
+            if 0 <= i < len(self.photos):
+                self.photos[i].status = "pending"
+                self._update_photo_row(i)
+                count += 1
+        if count == 0:
+            return
+        self.log(f"Regenerating {count} photo{'s' if count != 1 else ''}...")
+        self._start_processing()
 
     def _on_photo_selected(self, row, col, prev_row, prev_col):
         pass  # Could show preview in future
