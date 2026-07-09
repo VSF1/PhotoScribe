@@ -1701,6 +1701,21 @@ class PhotoScribe(QMainWindow):
         self._check_dependencies()
         QTimer.singleShot(500, self._refresh_models)
 
+    def _set_button_icon(self, button, text, icon_name, fallback_char):
+        """Sets a button's icon from the system theme on Linux,
+        with a Unicode character fallback for other systems."""
+        if sys.platform.startswith("linux"):
+            icon = QIcon.fromTheme(icon_name)
+            if not icon.isNull():
+                button.setText(text)
+                button.setIcon(icon)
+                # Some themes need a size set to not be huge
+                button.setIconSize(QSize(16, 16))
+                return
+
+        button.setText(f"{fallback_char} {text}".strip())
+
+
     def _check_dependencies(self):
         if not MetadataWriter.check_exiftool():
             self.log("⚠ ExifTool not found — writing metadata will not work.")
@@ -2285,7 +2300,8 @@ class PhotoScribe(QMainWindow):
         results_list_layout.addWidget(self.results_table)
 
         results_nav_row = QHBoxLayout()
-        self.results_prev_btn = QPushButton("◀ Prev")
+        self.results_prev_btn = QPushButton()
+        self._set_button_icon(self.results_prev_btn, "Prev", "go-previous", "◀")
         self.results_prev_btn.setFixedHeight(28)
         self.results_prev_btn.setStyleSheet("font-size: 11px; padding: 2px 10px;")
         self.results_prev_btn.clicked.connect(self._results_prev)
@@ -2296,7 +2312,8 @@ class PhotoScribe(QMainWindow):
         self.results_pos_label.setStyleSheet("color: #888; font-size: 11px;")
         results_nav_row.addWidget(self.results_pos_label)
 
-        self.results_next_btn = QPushButton("Next ▶")
+        self.results_next_btn = QPushButton()
+        self._set_button_icon(self.results_next_btn, "Next", "go-next", "▶")
         self.results_next_btn.setFixedHeight(28)
         self.results_next_btn.setStyleSheet("font-size: 11px; padding: 2px 10px;")
         self.results_next_btn.clicked.connect(self._results_next)
@@ -2410,52 +2427,51 @@ class PhotoScribe(QMainWindow):
         # ── Action buttons ──
         action_row = QHBoxLayout()
 
-        self.generate_btn = QPushButton("▶  Generate Metadata")
+        self.generate_btn = QPushButton()
+        self._set_button_icon(self.generate_btn, "Generate Metadata", "media-playback-start", "▶")
         self.generate_btn.setObjectName("primaryBtn")
         self.generate_btn.setMinimumHeight(40)
         self.generate_btn.clicked.connect(self._start_processing)
         action_row.addWidget(self.generate_btn)
 
-        self.stop_btn = QPushButton("■  Stop")
+        self.stop_btn = QPushButton()
+        self._set_button_icon(self.stop_btn, "Stop", "media-playback-stop", "■")
         self.stop_btn.setObjectName("dangerBtn")
         self.stop_btn.setMinimumHeight(40)
         self.stop_btn.setVisible(False)
         self.stop_btn.clicked.connect(self._stop_processing)
         action_row.addWidget(self.stop_btn)
 
-        self.write_btn = QPushButton("💾  Write Metadata to Files")
+        self.write_btn = QPushButton()
+        self._set_button_icon(self.write_btn, "Write Metadata to Files", "document-save", "💾")
         self.write_btn.setObjectName("writeBtn")
         self.write_btn.setMinimumHeight(40)
         self.write_btn.setEnabled(False)
         self.write_btn.clicked.connect(self._write_metadata)
         action_row.addWidget(self.write_btn)
 
-        self.export_btn = QPushButton("📋  Export CSV")
+        self.export_btn = QPushButton()
+        self._set_button_icon(self.export_btn, "Export CSV", "edit-copy", "📋")
         self.export_btn.setObjectName("exportBtn")
         self.export_btn.setMinimumHeight(40)
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._export_csv)
         action_row.addWidget(self.export_btn)
 
-        self.import_btn = QPushButton("📥  Import CSV")
+        self.import_btn = QPushButton()
+        self._set_button_icon(self.import_btn, "Import CSV", "document-open", "📥")
         self.import_btn.setObjectName("exportBtn")
         self.import_btn.setMinimumHeight(40)
         self.import_btn.clicked.connect(self._import_csv)
         action_row.addWidget(self.import_btn)
 
         action_row.addStretch()
-        self.toggle_theme_btn = QPushButton("Toggle Theme")
+        self.toggle_theme_btn = QPushButton()
         self.toggle_theme_btn.setMinimumHeight(40)
         self.toggle_theme_btn.clicked.connect(self._toggle_theme)
         action_row.addWidget(self.toggle_theme_btn)
 
         right_layout.addLayout(action_row)
-
-        # Progress bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        self.progress_bar.setTextVisible(False)
-        right_layout.addWidget(self.progress_bar)
 
         # Status bar
         self.status_label = QLabel("Ready")
@@ -4390,11 +4406,11 @@ def _apply_theme(self):
     if self.current_theme == "light":
         app.setPalette(self._light_palette)
         app.setStyleSheet(self._light_stylesheet)
-        self.toggle_theme_btn.setText("🌙 Dark Theme")
+        self._set_button_icon(self.toggle_theme_btn, "Dark Theme", "weather-clear-night", "🌙")
     else: # dark
         app.setPalette(self._dark_palette)
         app.setStyleSheet(self._dark_stylesheet)
-        self.toggle_theme_btn.setText("☀️ Light Theme")
+        self._set_button_icon(self.toggle_theme_btn, "Light Theme", "weather-clear", "☀️")
 
 # Monkey-patch the method into the class
 PhotoScribe._apply_theme = _apply_theme
