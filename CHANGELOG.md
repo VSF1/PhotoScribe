@@ -2,6 +2,16 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.5.4] — 2026-07-10
+
+### Fixed
+- **Location from RAW/DNG photos is no longer missed, so captions stop inventing far-away places.** PhotoScribe now reads GPS *and* the resolved place name (Sublocation / City / State / Country) from a photo's `.xmp` sidecar, not just from the file itself. RAW files geotagged in Lightroom or Geotag Photos Pro keep that data in the sidecar, so previously a RAW/DNG shot arrived with no location and the model would free-associate from the image alone — e.g. a Gaudí tower in Comillas, Spain captioned as being in Phuket, Thailand. JPEGs (GPS baked into EXIF) always worked; RAW now behaves the same. Reported on GitHub.
+- **The resolved place name is now preferred over a GPS lookup.** When a cataloguer (e.g. Lightroom) has already written City/State/Country, PhotoScribe uses that directly — exact and no network call — and only falls back to reverse-geocoding GPS coordinates when there's no place name to use.
+- **Accented keywords no longer show as "?" in Lightroom.** Keywords like *Château de Chenonceau* were written as Latin-1 and mis-decoded by readers. The IPTC block is now marked UTF-8 (`CodedCharacterSet=UTF8`) on every write, so accents survive round-trip.
+
+### Changed
+- **The photo's location is now treated as ground truth in the prompt.** When a Location is supplied, the model is explicitly told the photo was taken there and must not name a different city, region, or country even if the scene reminds it of somewhere else — and to describe the scene without naming a place when it isn't sure, rather than guessing.
+
 ## [1.5.3] — 2026-07-09
 
 ### Added

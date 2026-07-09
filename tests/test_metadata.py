@@ -305,6 +305,27 @@ class TestBuildPrompt:
         # "Andy" appears in the people line, not repeated in the subjects line
         assert "already tagged with these subjects: beach" in prompt
 
+    def test_location_asserted_as_ground_truth(self, monkeypatch):
+        # v1.5.4: when a Location is supplied, the prompt must forbid the model
+        # naming a different place (the "Spain photo captioned Thailand" bug).
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        w = make_worker(describe_people=False,
+                        context="Location: Comillas, Cantabria, Spain")
+        photo = PhotoItem(filepath="x.jpg", filename="x.jpg")
+        prompt = w._build_prompt(photo)
+        assert "Comillas, Cantabria, Spain" in prompt
+        assert "ground truth" in prompt.lower()
+        assert "never name a different" in prompt.lower()
+
+    def test_no_ground_truth_line_without_context(self, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        w = make_worker(describe_people=False, context="")
+        photo = PhotoItem(filepath="x.jpg", filename="x.jpg")
+        prompt = w._build_prompt(photo)
+        assert "ground truth" not in prompt.lower()
+
 
 # ── End-to-end writes (real ExifTool) ─────────────────────────────
 
@@ -424,3 +445,88 @@ class TestBatchWriteWorker:
             backup=False, append_keywords=True, skip_existing=True).run()
         title, _, _ = MetadataWriter.read_existing_metadata(str(f))
         assert title == "Keep Me"
+
+
+# ── UTF-8 accented keywords (v1.5.4) ──────────────────────────────
+
+@needs_exiftool
+class TestAccentedKeywords:
+    """Accented keywords used to be written as Latin-1 and shown as "?" in
+    Lightroom. v1.5.4 marks the IPTC block UTF-8 (CodedCharacterSet=UTF8)."""
+
+    def _ccs(self, path):
+        exiftool = MetadataWriter.find_exiftool()
+        r = photoscribe._run([exiftool, "-s3", "-IPTC:CodedCharacterSet", str(path)],
+                             capture_output=True, text=True)
+        return r.stdout.strip()
+
+    def test_single_write_preserves_accents(self, tmp_path):
+        img = make_jpeg(tmp_path / "a.jpg")
+        meta = PhotoMetadata(title="T", caption="C",
+                             keywords=["Château de Chenonceau", "Provençe", "Nîmes"])
+        MetadataWriter.write_metadata(str(img), meta, backup=False)
+        _, _, kws = MetadataWriter.read_existing_metadata(str(img))
+        assert "Château de Chenonceau" in kws
+        assert "Nîmes" in kws
+        assert self._ccs(img) == "UTF8"
+
+    def test_batch_write_preserves_accents(self, tmp_path):
+        img = make_jpeg(tmp_path / "b.jpg")
+        meta = PhotoMetadata(title="Café", caption="C",
+                             keywords=["Château de Chenonceau", "Loire Valley"])
+        n, errs = MetadataWriter.write_metadata_batch(
+            [(str(img), meta)], backup=False, append_keywords=False)
+        assert n == 1 and not errs
+        _, _, kws = MetadataWriter.read_existing_metadata(str(img))
+        assert "Château de Chenonceau" in kws
+        assert self._ccs(img) == "UTF8"
+
+
+# ── GPS + location from XMP sidecars (v1.5.4) ─────────────────────
+
+@needs_exiftool
+class TestSidecarLocation:
+    """RAW files geotagged in Lightroom / Geotag Photos Pro keep GPS and the
+    resolved City/State/Country in a .xmp sidecar, not baked into the raw.
+    v1.5.4 reads the sidecar so the location reaches the prompt."""
+
+    def _make_raw_with_sidecar(self, tmp_path, adobe_naming=False):
+        raw = tmp_path / "DSCF1234.RAF"
+        raw.write_bytes(b"\x00" * 32)  # dummy raw exiftool can't read
+        sidecar = (raw.with_suffix(".xmp") if adobe_naming
+                   else Path(str(raw) + ".xmp"))
+        exiftool = MetadataWriter.find_exiftool()
+        photoscribe._run([exiftool, "-overwrite_original",
+                          "-XMP:GPSLatitude=43.383686",
+                          "-XMP:GPSLongitude=-4.292961",
+                          "-XMP-photoshop:City=Comillas",
+                          "-XMP-photoshop:State=Cantabria",
+                          "-XMP-photoshop:Country=Spain",
+                          str(sidecar)], capture_output=True, text=True)
+        return raw
+
+    def test_gps_read_from_sidecar(self, tmp_path):
+        raw = self._make_raw_with_sidecar(tmp_path)
+        coords = photoscribe.read_gps_coordinates(str(raw))
+        assert coords is not None
+        assert abs(coords[0] - 43.383686) < 1e-4
+        assert abs(coords[1] - (-4.292961)) < 1e-4
+
+    def test_location_fields_read_from_sidecar(self, tmp_path):
+        raw = self._make_raw_with_sidecar(tmp_path)
+        loc = photoscribe.read_location_fields(str(raw))
+        assert loc is not None
+        assert "Comillas" in loc and "Spain" in loc
+        # City before Country in the assembled string
+        assert loc.index("Comillas") < loc.index("Spain")
+
+    def test_location_fields_adobe_naming(self, tmp_path):
+        raw = self._make_raw_with_sidecar(tmp_path, adobe_naming=True)
+        loc = photoscribe.read_location_fields(str(raw))
+        assert loc and "Comillas" in loc
+
+    def test_no_sidecar_returns_none(self, tmp_path):
+        raw = tmp_path / "bare.RAF"
+        raw.write_bytes(b"\x00" * 32)
+        assert photoscribe.read_gps_coordinates(str(raw)) is None
+        assert photoscribe.read_location_fields(str(raw)) is None

@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -246,27 +246,94 @@ def read_exif_date(filepath: str) -> Optional[str]:
 # ─────────────────────────────────────────────────────────
 
 def read_gps_coordinates(filepath: str) -> Optional[tuple]:
-    """Read GPS coordinates from photo EXIF data.
-    Returns (latitude, longitude) as floats, or None.
+    """Read GPS coordinates from a photo's EXIF/XMP data.
+
+    Checks the file itself AND any co-located .xmp sidecar — RAW files
+    (Fuji .RAF etc.) geotagged in Lightroom or Geotag Photos Pro keep the
+    GPS in the sidecar, not baked into the raw, so reading only the raw
+    silently misses it. Returns (latitude, longitude) as floats, or None.
     """
     exiftool = MetadataWriter.find_exiftool()
     if not exiftool:
         return None
-    try:
-        result = _run(
-            [exiftool, "-j", "-n", "-GPSLatitude", "-GPSLongitude", filepath],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            if data:
-                lat = data[0].get("GPSLatitude")
-                lon = data[0].get("GPSLongitude")
-                if lat is not None and lon is not None:
-                    return (float(lat), float(lon))
-    except Exception:
-        pass
+    targets = [str(filepath)] + MetadataWriter._sidecar_paths(filepath)
+    for tgt in targets:
+        try:
+            result = _run(
+                [exiftool, "-j", "-n", "-GPSLatitude", "-GPSLongitude", tgt],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                if data:
+                    lat = data[0].get("GPSLatitude")
+                    lon = data[0].get("GPSLongitude")
+                    if lat is not None and lon is not None:
+                        return (float(lat), float(lon))
+        except Exception:
+            continue
     return None
+
+
+def read_location_fields(filepath: str) -> Optional[str]:
+    """Read the human-readable location a cataloguer (e.g. Lightroom) already
+    resolved — Sublocation, City, State/Province, Country — from the file AND
+    any co-located .xmp sidecar. This is exact and needs no network, so it is
+    preferred over GPS reverse-geocoding. Returns a "Sublocation, City, State,
+    Country" string (deduped, in that order) or None if nothing is set.
+    """
+    exiftool = MetadataWriter.find_exiftool()
+    if not exiftool:
+        return None
+    # (json-key, exiftool-tag) in the order we want them to appear.
+    fields = [
+        ("Sublocation", "-XMP-iptcCore:Location"),
+        ("Location", "-IPTC:Sub-location"),
+        ("City", "-IPTC:City"),
+        ("City", "-XMP-photoshop:City"),
+        ("State", "-IPTC:Province-State"),
+        ("State", "-XMP-photoshop:State"),
+        ("Country", "-IPTC:Country-PrimaryLocationName"),
+        ("Country", "-XMP-photoshop:Country"),
+    ]
+    targets = [str(filepath)] + MetadataWriter._sidecar_paths(filepath)
+    # Collect the first non-empty value per conceptual slot, preserving order
+    # and de-duplicating (IPTC and XMP usually mirror each other).
+    slots = ["", "", "", ""]  # sublocation, city, state, country
+    slot_index = {"Sublocation": 0, "Location": 0, "City": 1,
+                  "State": 2, "Country": 3}
+    args = [exiftool, "-j"] + [tag for _, tag in fields]
+    for tgt in targets:
+        try:
+            result = _run(args + [tgt], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0 or not result.stdout:
+                continue
+            data = json.loads(result.stdout)
+            if not data:
+                continue
+            entry = data[0]
+            for jkey, tag in fields:
+                idx = slot_index[jkey]
+                if slots[idx]:
+                    continue
+                # exiftool strips the group prefix in -j output; the JSON key
+                # is the bare tag name.
+                bare = tag.split(":")[-1]
+                val = entry.get(bare)
+                if val is None:
+                    # Some tags share a JSON key (City/State/Country); the
+                    # first matching entry wins, which is fine.
+                    val = entry.get(jkey)
+                if val is not None and str(val).strip():
+                    slots[idx] = str(val).strip()
+        except Exception:
+            continue
+    parts, seen = [], set()
+    for s in slots:
+        if s and s.lower() not in seen:
+            seen.add(s.lower())
+            parts.append(s)
+    return ", ".join(parts) if parts else None
 
 
 def reverse_geocode(lat: float, lon: float) -> Optional[str]:
@@ -424,6 +491,15 @@ class OllamaWorker(QThread):
 
         if self.context.strip():
             parts.append(f"Context for this photo: {self.context.strip()}")
+            parts.append(
+                "This context is factual ground truth about the photo. In "
+                "particular, if a Location is given, the photo was taken there "
+                "— use that place and never name a different city, region, or "
+                "country, even if the scene reminds you of somewhere else. If "
+                "no location is given, or you are not certain of the exact "
+                "place, describe the scene without naming a specific location "
+                "rather than guessing one."
+            )
 
         parts.append(self.prompt.strip())
 
@@ -1097,7 +1173,10 @@ class MetadataWriter:
                 skip_existing=skip_existing, append_keywords=append_keywords)
 
         exiftool = MetadataWriter.find_exiftool() or "exiftool"
-        args = [exiftool]
+        # Mark the IPTC block as UTF-8 so accented keywords (e.g. "Château de
+        # Chenonceau") survive. Without this, exiftool falls back to Latin-1
+        # and readers like Lightroom show a "?" for the accented characters.
+        args = [exiftool, "-codedcharacterset=utf8"]
 
         if not backup:
             args.append("-overwrite_original")
@@ -1248,6 +1327,8 @@ class MetadataWriter:
 
                 for filepath, metadata in regular_items:
                     arg_lines = []
+                    # UTF-8 IPTC so accented keywords aren't mangled to "?".
+                    arg_lines.append("-codedcharacterset=utf8")
                     if not backup:
                         arg_lines.append("-overwrite_original")
 
@@ -3086,18 +3167,27 @@ class PhotoScribe(QMainWindow):
                         self.log(f"EXIF date fallback: {exif_date}")
                         break
 
-        # GPS reverse-geocode (opt-in, makes external request)
-        if self.gps_lookup_check.isChecked():
-            location_field = self.context_fields["ctx_location"]
-            if not location_field.text():
-                for fp in filepaths[:5]:
-                    coords = read_gps_coordinates(fp)
-                    if coords:
-                        place = reverse_geocode(coords[0], coords[1])
-                        if place:
-                            location_field.setText(place)
-                            self.log(f"GPS location: {place}")
-                            break
+        # Location. Prefer the place name a cataloguer (e.g. Lightroom) already
+        # resolved into the file/sidecar — it is exact and needs no network.
+        # Only fall back to GPS reverse-geocode (opt-in, external request) when
+        # there is no embedded location to use.
+        location_field = self.context_fields["ctx_location"]
+        if not location_field.text():
+            for fp in filepaths[:5]:
+                place = read_location_fields(fp)
+                if place:
+                    location_field.setText(place)
+                    self.log(f"Location from metadata: {place}")
+                    break
+        if self.gps_lookup_check.isChecked() and not location_field.text():
+            for fp in filepaths[:5]:
+                coords = read_gps_coordinates(fp)
+                if coords:
+                    place = reverse_geocode(coords[0], coords[1])
+                    if place:
+                        location_field.setText(place)
+                        self.log(f"GPS location: {place}")
+                        break
 
     # ── Folder presets ──
 
