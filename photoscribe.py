@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.5.5"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -2353,13 +2353,17 @@ class PhotoScribe(QMainWindow):
         checks_grid.addWidget(self.exif_date_fallback_check, 2, 1)
 
         self.gps_lookup_check = QCheckBox(
-            "Look up location from GPS coordinates (requires internet)"
+            "Look up location from photo GPS / metadata"
         )
         self.gps_lookup_check.setChecked(False)
         self.gps_lookup_check.setToolTip(
-            "When enabled and photos have GPS EXIF data, looks up the\n"
-            "place name via OpenStreetMap Nominatim (free public API).\n"
-            "This makes an external network request. Off by default."
+            "Fills the Location field from each photo's own metadata.\n"
+            "Uses the place name your cataloguer (e.g. Lightroom) already\n"
+            "resolved — City, State, Country, from the file or its .xmp\n"
+            "sidecar — when present, with no network request. Only if no\n"
+            "such place name exists does it reverse-geocode the GPS\n"
+            "coordinates via OpenStreetMap Nominatim (a free public API,\n"
+            "which is an external request). Off by default."
         )
         self.gps_lookup_check.toggled.connect(self._on_gps_lookup_toggled)
         checks_grid.addWidget(self.gps_lookup_check, 3, 0)
@@ -3105,10 +3109,13 @@ class PhotoScribe(QMainWindow):
             return
         # Show consent dialog
         reply = QMessageBox.question(
-            self, "GPS Location Lookup",
-            "This feature sends your photos' GPS coordinates to OpenStreetMap\n"
-            "(nominatim.openstreetmap.org) to look up place names.\n\n"
-            "No image data is sent — only latitude and longitude.\n\n"
+            self, "Location Lookup",
+            "This fills the Location field from each photo's own metadata.\n\n"
+            "When a photo already has a place name (City/State/Country, e.g.\n"
+            "from Lightroom), that is used directly with no network request.\n"
+            "Only when there is no such place name does it send the photo's\n"
+            "GPS coordinates to OpenStreetMap (nominatim.openstreetmap.org)\n"
+            "to look one up — latitude and longitude only, never image data.\n\n"
             "Do you want to enable this?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
@@ -3148,13 +3155,17 @@ class PhotoScribe(QMainWindow):
         self.log(f"Folder context detected: {ctx.location}, {ctx.date_str} (from '{ctx.raw_folder}')")
 
     def _detect_and_apply_folder_context(self, filepaths: list):
-        """Detect context from folder names and apply if found."""
-        if not self.folder_context_check.isChecked():
-            return
-        ctx = detect_batch_folder_context(filepaths)
-        if ctx:
-            self._apply_folder_context(ctx)
-            self._apply_folder_presets(ctx.raw_folder)
+        """On load, auto-fill the context fields. Each source is gated on its
+        OWN checkbox — folder-name detection, the EXIF-date fallback, and the
+        location lookup are independent. They must not require 'Use folder
+        context' to be enabled (issue #18: the GPS/location lookup silently did
+        nothing whenever folder context was off, because this whole method used
+        to bail out early)."""
+        if self.folder_context_check.isChecked():
+            ctx = detect_batch_folder_context(filepaths)
+            if ctx:
+                self._apply_folder_context(ctx)
+                self._apply_folder_presets(ctx.raw_folder)
 
         # EXIF date fallback
         if self.exif_date_fallback_check.isChecked():
@@ -3167,27 +3178,28 @@ class PhotoScribe(QMainWindow):
                         self.log(f"EXIF date fallback: {exif_date}")
                         break
 
-        # Location. Prefer the place name a cataloguer (e.g. Lightroom) already
-        # resolved into the file/sidecar — it is exact and needs no network.
-        # Only fall back to GPS reverse-geocode (opt-in, external request) when
-        # there is no embedded location to use.
-        location_field = self.context_fields["ctx_location"]
-        if not location_field.text():
-            for fp in filepaths[:5]:
-                place = read_location_fields(fp)
-                if place:
-                    location_field.setText(place)
-                    self.log(f"Location from metadata: {place}")
-                    break
-        if self.gps_lookup_check.isChecked() and not location_field.text():
-            for fp in filepaths[:5]:
-                coords = read_gps_coordinates(fp)
-                if coords:
-                    place = reverse_geocode(coords[0], coords[1])
+        # Location lookup (opt-in). Prefer the place name a cataloguer (e.g.
+        # Lightroom) already resolved into the file/sidecar — exact, no network
+        # — and only reverse-geocode the GPS coordinates when there's no
+        # embedded place name to use.
+        if self.gps_lookup_check.isChecked():
+            location_field = self.context_fields["ctx_location"]
+            if not location_field.text():
+                for fp in filepaths[:5]:
+                    place = read_location_fields(fp)
                     if place:
                         location_field.setText(place)
-                        self.log(f"GPS location: {place}")
+                        self.log(f"Location from metadata: {place}")
                         break
+            if not location_field.text():
+                for fp in filepaths[:5]:
+                    coords = read_gps_coordinates(fp)
+                    if coords:
+                        place = reverse_geocode(coords[0], coords[1])
+                        if place:
+                            location_field.setText(place)
+                            self.log(f"GPS location: {place}")
+                            break
 
     # ── Folder presets ──
 

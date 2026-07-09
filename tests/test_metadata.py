@@ -530,3 +530,50 @@ class TestSidecarLocation:
         raw.write_bytes(b"\x00" * 32)
         assert photoscribe.read_gps_coordinates(str(raw)) is None
         assert photoscribe.read_location_fields(str(raw)) is None
+
+
+# ── Location lookup independent of folder context (issue #18) ─────
+
+class TestLocationLookupGating:
+    """v1.5.5 / issue #18: the location lookup used to be dead code unless
+    'Use folder context' was also enabled, because the whole autofill method
+    bailed out early. It must run on its own checkbox alone."""
+
+    def _window(self, qapp, monkeypatch):
+        monkeypatch.setattr(photoscribe, "read_location_fields",
+                            lambda fp: "Comillas, Cantabria, Spain")
+        monkeypatch.setattr(photoscribe, "read_gps_coordinates", lambda fp: None)
+        w = photoscribe.PhotoScribe()
+        w.context_fields["ctx_location"].setText("")
+        return w
+
+    def _set_gps(self, w, on):
+        w.gps_lookup_check.blockSignals(True)  # skip the consent dialog
+        w.gps_lookup_check.setChecked(on)
+        w.gps_lookup_check.blockSignals(False)
+
+    def test_lookup_runs_with_folder_context_off(self, qapp, monkeypatch):
+        w = self._window(qapp, monkeypatch)
+        w.folder_context_check.setChecked(False)
+        self._set_gps(w, True)
+        w._detect_and_apply_folder_context(["/fake/DSCF1234.RAF"])
+        assert w.context_fields["ctx_location"].text() == "Comillas, Cantabria, Spain"
+
+    def test_no_lookup_when_checkbox_off(self, qapp, monkeypatch):
+        w = self._window(qapp, monkeypatch)
+        w.folder_context_check.setChecked(False)
+        self._set_gps(w, False)
+        w._detect_and_apply_folder_context(["/fake/DSCF1234.RAF"])
+        assert w.context_fields["ctx_location"].text() == ""
+
+    def test_gps_fallback_when_no_embedded_place(self, qapp, monkeypatch):
+        w = self._window(qapp, monkeypatch)
+        monkeypatch.setattr(photoscribe, "read_location_fields", lambda fp: None)
+        monkeypatch.setattr(photoscribe, "read_gps_coordinates",
+                            lambda fp: (43.38, -4.29))
+        monkeypatch.setattr(photoscribe, "reverse_geocode",
+                            lambda lat, lon: "Comillas, Spain")
+        w.folder_context_check.setChecked(False)
+        self._set_gps(w, True)
+        w._detect_and_apply_folder_context(["/fake/DSCF1234.RAF"])
+        assert w.context_fields["ctx_location"].text() == "Comillas, Spain"

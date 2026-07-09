@@ -2,6 +2,14 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.5.5] — 2026-07-10
+
+### Fixed
+- **"Look up location from GPS" now actually runs on its own.** The location lookup was only executed when **Use folder context** was *also* enabled — with folder context off, enabling the GPS/location option did nothing at all (no network request, no location filled). Each source now runs on its own checkbox independently: folder-name detection, the EXIF-date fallback, and the location lookup no longer depend on one another. Reported on GitHub (#18).
+
+### Changed
+- **Location lookup renamed and clarified.** The option is now **"Look up location from photo GPS / metadata"**: it fills the Location field from the place name your cataloguer (e.g. Lightroom) already resolved — City/State/Country, from the file or its `.xmp` sidecar, with no network request — and only reverse-geocodes the GPS coordinates via OpenStreetMap when there's no such place name. The tooltip and consent dialog now describe this.
+
 ## [1.5.4] — 2026-07-10
 
 ### Fixed
