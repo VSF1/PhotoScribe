@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.5.5"
+APP_VERSION = "1.5.6"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -336,11 +336,36 @@ def read_location_fields(filepath: str) -> Optional[str]:
     return ", ".join(parts) if parts else None
 
 
+# Nominatim's usage policy allows at most one request per second, and asks
+# that results be cached. Photos from one shoot share a location, so caching
+# on rounded coordinates (4dp ≈ 11m) turns a whole folder into one request.
+_geocode_cache = {}
+_geocode_lock = threading.Lock()
+_geocode_last_call = 0.0
+_GEOCODE_MIN_INTERVAL = 1.0
+
+
 def reverse_geocode(lat: float, lon: float) -> Optional[str]:
     """Reverse geocode via OpenStreetMap Nominatim (free, no API key).
-    NOTE: This makes an external network request.
+    NOTE: This makes an external network request. Results are cached and
+    rate-limited to one request per second per Nominatim's usage policy.
     Returns place description or None.
     """
+    global _geocode_last_call
+    key = (round(lat, 4), round(lon, 4))
+    with _geocode_lock:
+        if key in _geocode_cache:
+            return _geocode_cache[key]
+        wait = _GEOCODE_MIN_INTERVAL - (time.monotonic() - _geocode_last_call)
+        if wait > 0:
+            time.sleep(wait)
+        place = _reverse_geocode_uncached(lat, lon)
+        _geocode_last_call = time.monotonic()
+        _geocode_cache[key] = place
+        return place
+
+
+def _reverse_geocode_uncached(lat: float, lon: float) -> Optional[str]:
     try:
         url = (
             f"https://nominatim.openstreetmap.org/reverse"
@@ -354,8 +379,12 @@ def reverse_geocode(lat: float, lon: float) -> Optional[str]:
         data = resp.json()
         addr = data.get("address", {})
         parts = []
+        # "locality" and "neighbourhood" matter: rural and coastal places
+        # (e.g. Gerroa, NSW) come back only under those keys, and dropping
+        # them leaves you with a useless "New South Wales, Australia".
         for key in ["tourism", "natural", "leisure", "amenity",
-                    "hamlet", "village", "suburb", "town", "city"]:
+                    "hamlet", "village", "locality", "neighbourhood",
+                    "suburb", "town", "city"]:
             if key in addr:
                 parts.append(addr[key])
                 break
@@ -373,6 +402,24 @@ def reverse_geocode(lat: float, lon: float) -> Optional[str]:
             return ", ".join(display.split(", ")[:3])
     except Exception:
         pass
+    return None
+
+
+def resolve_photo_location(filepath: str) -> Optional[str]:
+    """The place this one photo was taken, or None.
+
+    Prefers the place name a cataloguer (e.g. Lightroom) already resolved into
+    the file or its .xmp sidecar — exact, and no network request. Only when
+    there is no such name does it reverse-geocode the photo's GPS coordinates.
+    Resolved per photo, so a folder spanning several places tags each one
+    correctly.
+    """
+    place = read_location_fields(filepath)
+    if place:
+        return place
+    coords = read_gps_coordinates(filepath)
+    if coords:
+        return reverse_geocode(coords[0], coords[1])
     return None
 
 # ─────────────────────────────────────────────────────────
@@ -413,7 +460,8 @@ class OllamaWorker(QThread):
 
     def __init__(self, photos, model, prompt, context, ollama_url,
                  keywords_list=None, backend="ollama", max_tokens=2048,
-                 describe_people=True, skip_existing=False):
+                 describe_people=True, skip_existing=False,
+                 gps_lookup=False, has_manual_location=False):
         super().__init__()
         self.photos = photos
         self.model = model
@@ -425,6 +473,13 @@ class OllamaWorker(QThread):
         self.max_tokens = max_tokens
         self.describe_people = describe_people
         self.skip_existing = skip_existing
+        # Location is resolved per photo at generation time (not once at load),
+        # so ticking the option or re-running Regenerate takes effect, and a
+        # folder spanning several places tags each photo with its own.
+        # A location typed into the context fields overrides all of that.
+        self.gps_lookup = gps_lookup
+        self.has_manual_location = has_manual_location
+        self._logged_no_location = False
         self._cancelled = False
         self.batch_total_time = 0.0
         self.batch_processed = 0
@@ -489,8 +544,27 @@ class OllamaWorker(QThread):
         any person names already tagged on that specific image)."""
         parts = []
 
-        if self.context.strip():
-            parts.append(f"Context for this photo: {self.context.strip()}")
+        ctx = self.context.strip()
+        if ctx:
+            parts.append(f"Context for this photo: {ctx}")
+
+        # Per-photo location, unless the user typed one into the context fields
+        # (which then applies to every photo, as an explicit override).
+        photo_location = ""
+        if photo and self.gps_lookup and not self.has_manual_location:
+            photo_location = resolve_photo_location(photo.filepath) or ""
+            if photo_location:
+                self.log_message.emit(
+                    f"Location for {photo.filename}: {photo_location}")
+                parts.append(
+                    f"Location: this photo was taken at {photo_location}.")
+            elif not self._logged_no_location:
+                self._logged_no_location = True
+                self.log_message.emit(
+                    "Location lookup: no GPS or place name found on "
+                    f"{photo.filename} (further misses won't be logged)")
+
+        if ctx or photo_location:
             parts.append(
                 "This context is factual ground truth about the photo. In "
                 "particular, if a Location is given, the photo was taken there "
@@ -2752,6 +2826,17 @@ class PhotoScribe(QMainWindow):
         keywords_vocab = self.settings.value("keywords_vocab", "")
         if keywords_vocab:
             self.keywords_edit.setPlainText(keywords_vocab)
+        # These used to reset on every launch, so a ticked location lookup
+        # silently turned itself off between sessions (#18 follow-up).
+        gps_lookup = self.settings.value("gps_lookup", "false")
+        # Restoring a ticked box must not re-open the one-time consent dialog.
+        self.gps_lookup_check.blockSignals(True)
+        self.gps_lookup_check.setChecked(gps_lookup == "true")
+        self.gps_lookup_check.blockSignals(False)
+        folder_context = self.settings.value("folder_context", "true")
+        self.folder_context_check.setChecked(folder_context == "true")
+        exif_date_fallback = self.settings.value("exif_date_fallback", "true")
+        self.exif_date_fallback_check.setChecked(exif_date_fallback == "true")
         self._load_folder_presets()
 
     def _save_settings(self):
@@ -2776,6 +2861,18 @@ class PhotoScribe(QMainWindow):
         self.settings.setValue(
             "use_sidecar",
             "true" if self.sidecar_check.isChecked() else "false"
+        )
+        self.settings.setValue(
+            "gps_lookup",
+            "true" if self.gps_lookup_check.isChecked() else "false"
+        )
+        self.settings.setValue(
+            "folder_context",
+            "true" if self.folder_context_check.isChecked() else "false"
+        )
+        self.settings.setValue(
+            "exif_date_fallback",
+            "true" if self.exif_date_fallback_check.isChecked() else "false"
         )
         self.settings.setValue("sidecar_naming", str(self.sidecar_naming_combo.currentIndex()))
         self.settings.setValue("response_length", str(self.response_length_combo.currentIndex()))
@@ -3178,28 +3275,13 @@ class PhotoScribe(QMainWindow):
                         self.log(f"EXIF date fallback: {exif_date}")
                         break
 
-        # Location lookup (opt-in). Prefer the place name a cataloguer (e.g.
-        # Lightroom) already resolved into the file/sidecar — exact, no network
-        # — and only reverse-geocode the GPS coordinates when there's no
-        # embedded place name to use.
-        if self.gps_lookup_check.isChecked():
-            location_field = self.context_fields["ctx_location"]
-            if not location_field.text():
-                for fp in filepaths[:5]:
-                    place = read_location_fields(fp)
-                    if place:
-                        location_field.setText(place)
-                        self.log(f"Location from metadata: {place}")
-                        break
-            if not location_field.text():
-                for fp in filepaths[:5]:
-                    coords = read_gps_coordinates(fp)
-                    if coords:
-                        place = reverse_geocode(coords[0], coords[1])
-                        if place:
-                            location_field.setText(place)
-                            self.log(f"GPS location: {place}")
-                            break
+        # NOTE: the location is deliberately NOT auto-filled into the shared
+        # Location field here. It is resolved per photo at generation time
+        # (see OllamaWorker._build_prompt), so that enabling the option after
+        # loading takes effect, Regenerate picks it up, and a folder spanning
+        # several places tags each photo with its own location rather than
+        # pinning the whole batch to whichever file happened to be scanned.
+        # Anything typed into the Location field still overrides everything.
 
     # ── Folder presets ──
 
@@ -3426,6 +3508,9 @@ class PhotoScribe(QMainWindow):
             max_tokens=max_tokens_map.get(self.response_length_combo.currentIndex(), 512),
             describe_people=self.describe_people_check.isChecked(),
             skip_existing=self.skip_existing_check.isChecked(),
+            gps_lookup=self.gps_lookup_check.isChecked(),
+            has_manual_location=bool(
+                self.context_fields["ctx_location"].text().strip()),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.result.connect(self._on_result)

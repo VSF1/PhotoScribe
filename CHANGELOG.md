@@ -2,6 +2,18 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.5.6] — 2026-07-10
+
+### Fixed
+- **The location option no longer switches itself off between sessions.** "Look up location from photo GPS / metadata" was never saved, so it silently reset to unticked on every launch — while the one-time consent *was* remembered, making it look as though the option should still be on. It now persists, as do "Use folder context" and the EXIF-date fallback.
+- **Location now takes effect when you enable it, and on Regenerate.** It used to be resolved once, when photos were loaded. Ticking the option afterwards, or re-running Regenerate, did nothing — you had to clear and reload the folder. The location is now resolved per photo when the metadata is generated.
+- **Each photo gets its own location.** Previously one location was sampled from the first few files and applied to the whole batch, so a folder spanning several places tagged them all identically — and a geotagged photo further down the list was never even looked at. Anything typed into the Location field still overrides everything, for every photo.
+- **Rural and coastal places are named properly.** The geocoder ignored OpenStreetMap's `locality` and `neighbourhood` fields, so a beach at Gerroa, NSW came back as the useless "New South Wales, Australia". It now reads them, giving "Gerroa, New South Wales, Australia".
+- **The lookup says what it found.** It logs the location resolved for each photo, and says so once when a photo has no GPS or place name at all, instead of failing silently.
+
+### Changed
+- **Geocoding results are cached and rate-limited.** Coordinates are rounded (~11m) and cached, so a folder shot in one place makes a single request, and requests are held to one per second in line with OpenStreetMap Nominatim's usage policy.
+
 ## [1.5.5] — 2026-07-10
 
 ### Fixed

@@ -532,48 +532,150 @@ class TestSidecarLocation:
         assert photoscribe.read_location_fields(str(raw)) is None
 
 
+# ── Per-photo location at generation time (issue #18 follow-up) ───
+
+class TestPerPhotoLocation:
+    """Location is resolved per photo when the prompt is built, not once at
+    load into a shared field. So enabling the option after loading works,
+    Regenerate picks it up, and a mixed-location folder tags each photo."""
+
+    def test_location_injected_per_photo(self, qapp, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        monkeypatch.setattr(photoscribe, "resolve_photo_location",
+                            lambda fp: "Gerroa, New South Wales, Australia")
+        w = make_worker(describe_people=False, gps_lookup=True)
+        photo = PhotoItem(filepath="x.cr2", filename="x.cr2")
+        prompt = w._build_prompt(photo)
+        assert "Gerroa, New South Wales, Australia" in prompt
+        assert "ground truth" in prompt.lower()
+
+    def test_no_lookup_when_disabled(self, qapp, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        called = []
+        monkeypatch.setattr(photoscribe, "resolve_photo_location",
+                            lambda fp: called.append(fp) or "Gerroa")
+        w = make_worker(describe_people=False, gps_lookup=False)
+        prompt = w._build_prompt(PhotoItem(filepath="x.cr2", filename="x.cr2"))
+        assert "Gerroa" not in prompt
+        assert called == []  # must not hit exiftool/network when off
+
+    def test_manual_location_overrides(self, qapp, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        monkeypatch.setattr(photoscribe, "resolve_photo_location",
+                            lambda fp: "Gerroa")
+        w = make_worker(describe_people=False, gps_lookup=True,
+                        context="Location: Berry, NSW", has_manual_location=True)
+        prompt = w._build_prompt(PhotoItem(filepath="x.cr2", filename="x.cr2"))
+        assert "Berry, NSW" in prompt
+        assert "Gerroa" not in prompt
+
+    def test_different_photos_get_different_locations(self, qapp, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        places = {"a.cr2": "Gerroa, Australia", "b.cr2": "Comillas, Spain"}
+        monkeypatch.setattr(photoscribe, "resolve_photo_location",
+                            lambda fp: places[fp])
+        w = make_worker(describe_people=False, gps_lookup=True)
+        pa = w._build_prompt(PhotoItem(filepath="a.cr2", filename="a.cr2"))
+        pb = w._build_prompt(PhotoItem(filepath="b.cr2", filename="b.cr2"))
+        assert "Gerroa, Australia" in pa and "Comillas" not in pa
+        assert "Comillas, Spain" in pb and "Gerroa" not in pb
+
+
+# ── Geocoder place-name priority + caching ────────────────────────
+
+class TestReverseGeocode:
+    def _resp(self, address):
+        class R:
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self_inner): return {"address": address,
+                                          "display_name": "x, y, z"}
+        return R()
+
+    def test_locality_is_used(self, monkeypatch):
+        # Gerroa (rural NSW) comes back only under "locality"; dropping it
+        # left the useless "New South Wales, Australia".
+        photoscribe._geocode_cache.clear()
+        monkeypatch.setattr(photoscribe.requests, "get",
+                            lambda *a, **k: self._resp(
+                                {"locality": "Gerroa", "state": "New South Wales",
+                                 "country": "Australia"}))
+        assert photoscribe.reverse_geocode(-34.7728, 150.8148) == \
+            "Gerroa, New South Wales, Australia"
+
+    def test_neighbourhood_is_used(self, monkeypatch):
+        photoscribe._geocode_cache.clear()
+        monkeypatch.setattr(photoscribe.requests, "get",
+                            lambda *a, **k: self._resp(
+                                {"neighbourhood": "The Rocks", "state": "NSW",
+                                 "country": "Australia"}))
+        assert photoscribe.reverse_geocode(-33.86, 151.21).startswith("The Rocks")
+
+    def test_result_is_cached(self, monkeypatch):
+        photoscribe._geocode_cache.clear()
+        calls = []
+        def fake_get(*a, **k):
+            calls.append(1)
+            return self._resp({"locality": "Gerroa", "country": "Australia"})
+        monkeypatch.setattr(photoscribe.requests, "get", fake_get)
+        a = photoscribe.reverse_geocode(-34.7728, 150.8148)
+        b = photoscribe.reverse_geocode(-34.77281, 150.81479)  # same to 4dp
+        assert a == b
+        assert len(calls) == 1, "second lookup should hit the cache"
+
+
 # ── Location lookup independent of folder context (issue #18) ─────
 
-class TestLocationLookupGating:
-    """v1.5.5 / issue #18: the location lookup used to be dead code unless
-    'Use folder context' was also enabled, because the whole autofill method
-    bailed out early. It must run on its own checkbox alone."""
+class TestLoadTimeAutofill:
+    """v1.5.5 / issue #18: the autofill method used to bail out early unless
+    'Use folder context' was ticked, taking the EXIF-date fallback down with
+    it. Each source now runs on its own checkbox. The location is no longer
+    filled here at all — it is resolved per photo at generation time."""
 
-    def _window(self, qapp, monkeypatch):
-        monkeypatch.setattr(photoscribe, "read_location_fields",
-                            lambda fp: "Comillas, Cantabria, Spain")
-        monkeypatch.setattr(photoscribe, "read_gps_coordinates", lambda fp: None)
+    def _window(self, monkeypatch):
+        monkeypatch.setattr(photoscribe, "read_exif_date",
+                            lambda fp: "24 October 2015")
         w = photoscribe.PhotoScribe()
         w.context_fields["ctx_location"].setText("")
+        w.context_fields["ctx_datetime"].setText("")
         return w
 
-    def _set_gps(self, w, on):
-        w.gps_lookup_check.blockSignals(True)  # skip the consent dialog
-        w.gps_lookup_check.setChecked(on)
-        w.gps_lookup_check.blockSignals(False)
-
-    def test_lookup_runs_with_folder_context_off(self, qapp, monkeypatch):
-        w = self._window(qapp, monkeypatch)
+    def test_exif_date_runs_with_folder_context_off(self, qapp, monkeypatch):
+        w = self._window(monkeypatch)
         w.folder_context_check.setChecked(False)
-        self._set_gps(w, True)
+        w.exif_date_fallback_check.setChecked(True)
         w._detect_and_apply_folder_context(["/fake/DSCF1234.RAF"])
-        assert w.context_fields["ctx_location"].text() == "Comillas, Cantabria, Spain"
+        assert w.context_fields["ctx_datetime"].text() == "24 October 2015"
 
-    def test_no_lookup_when_checkbox_off(self, qapp, monkeypatch):
-        w = self._window(qapp, monkeypatch)
-        w.folder_context_check.setChecked(False)
-        self._set_gps(w, False)
+    def test_location_not_pinned_at_load(self, qapp, monkeypatch):
+        # Would previously pin the whole batch to the first geotagged file.
+        w = self._window(monkeypatch)
+        monkeypatch.setattr(photoscribe, "read_location_fields",
+                            lambda fp: "Comillas, Spain")
+        w.gps_lookup_check.blockSignals(True)
+        w.gps_lookup_check.setChecked(True)
+        w.gps_lookup_check.blockSignals(False)
         w._detect_and_apply_folder_context(["/fake/DSCF1234.RAF"])
         assert w.context_fields["ctx_location"].text() == ""
 
-    def test_gps_fallback_when_no_embedded_place(self, qapp, monkeypatch):
-        w = self._window(qapp, monkeypatch)
-        monkeypatch.setattr(photoscribe, "read_location_fields", lambda fp: None)
-        monkeypatch.setattr(photoscribe, "read_gps_coordinates",
-                            lambda fp: (43.38, -4.29))
-        monkeypatch.setattr(photoscribe, "reverse_geocode",
-                            lambda lat, lon: "Comillas, Spain")
-        w.folder_context_check.setChecked(False)
-        self._set_gps(w, True)
-        w._detect_and_apply_folder_context(["/fake/DSCF1234.RAF"])
-        assert w.context_fields["ctx_location"].text() == "Comillas, Spain"
+    def test_gps_lookup_setting_persists(self, qapp, monkeypatch, tmp_path):
+        # v1.5.6: the ticked box used to reset on every launch, because it was
+        # never written to (or read from) QSettings.
+        from PySide6.QtCore import QSettings
+        w = self._window(monkeypatch)
+        w.settings = QSettings(str(tmp_path / "prefs.ini"),
+                               QSettings.IniFormat)  # never touch real prefs
+        w.gps_lookup_check.blockSignals(True)
+        w.gps_lookup_check.setChecked(True)
+        w.gps_lookup_check.blockSignals(False)
+        w._save_settings()
+        assert w.settings.value("gps_lookup") == "true"
+        w.gps_lookup_check.blockSignals(True)
+        w.gps_lookup_check.setChecked(False)
+        w.gps_lookup_check.blockSignals(False)
+        w._load_settings()
+        assert w.gps_lookup_check.isChecked() is True
