@@ -2,6 +2,16 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.6.0] — 2026-07-10
+
+### Changed
+- **Redesigned interface.** The window is reorganised into distinct cards — Model, Prompt, Batch Context, Options — each with a hairline border, rounded corners and its own section label, instead of one continuous scroll. The palette is warmer and far less saturated: the accent is now reserved for the things that actually mean something (the active tab, section labels, ticked checkboxes, and the Generate button), so nothing else competes for your eye.
+- **Clearer controls.** Buttons share one height and radius and are ranked by weight: Generate is solid accent, Write Metadata is a muted teal, Export/Import are bordered ghost buttons. Checkboxes are a filled accent square when ticked and a plain outline when not. Tabs get a pill-shaped active state, and the backend connection status is now a pill badge in the header.
+- **The prompt box is taller**, so the default prompt reads in full without scrolling.
+
+### Fixed
+- A stray white strip could appear at the right-hand edge of the settings panel, and the scrollbar rendered light against the dark theme.
+
 ## [1.5.6] — 2026-07-10
 
 ### Fixed

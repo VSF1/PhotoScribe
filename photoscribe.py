@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.5.6"
+APP_VERSION = "1.6.0"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -1662,255 +1662,386 @@ class MetadataWriteWorker(QThread):
 # Stylesheet
 # ─────────────────────────────────────────────────────────
 
+# ── Palette ───────────────────────────────────────────────
+# Warm, desaturated dark theme. The accent (#c05a2e, a burnt terracotta) is
+# rationed deliberately: active tab, section eyebrows, checked boxes, and the
+# primary Generate button only. Everything else is neutral, so the accent
+# actually means something. Qt Style Sheets do NOT support `text-transform`,
+# so anything that reads as uppercase is uppercased in the widget text itself.
+#
+#   page   #141416   card   #1d1d20   input  #17171a   hairline #2a2a2f
+#   text   #f2f0eb   muted  #9a9aa0   dim    #5f5f66
+#   accent #c05a2e   tint   #e0a06a   eyebrow #d1935e
+#   green  #7bc9a0   teal   #2c5a4d   danger #e2796a
+
 STYLESHEET = """
-QMainWindow {
-    background-color: #1a1a1e;
+QMainWindow, QDialog {
+    background-color: #141416;
 }
 QWidget {
-    color: #e0e0e0;
-    font-family: 'Helvetica Neue', 'Segoe UI', sans-serif;
+    color: #f2f0eb;
+    font-family: 'Inter', 'SF Pro Text', 'Helvetica Neue', 'Segoe UI', sans-serif;
     font-size: 13px;
 }
+
+/* ── Cards ── */
 QGroupBox {
-    font-weight: 600;
-    font-size: 12px;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    color: #a0a0a0;
-    border: 1px solid #2a2a30;
-    border-radius: 8px;
-    margin-top: 12px;
-    padding: 12px 12px 10px 12px;
+    background-color: #1d1d20;
+    border: 1px solid #2a2a2f;
+    border-radius: 12px;
+    margin-top: 0px;
+    padding: 34px 18px 18px 18px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #d1935e;
 }
 QGroupBox::title {
-    subcontrol-origin: margin;
+    subcontrol-origin: padding;
     subcontrol-position: top left;
-    padding: 0 8px;
-    margin-left: 8px;
+    left: 18px;
+    top: 14px;
+    padding: 0px;
+    background: transparent;
 }
+
+/* ── Buttons: one height, one radius ── */
 QPushButton {
-    background-color: #2a2a30;
-    border: 1px solid #3a3a42;
-    border-radius: 6px;
-    padding: 8px 16px;
+    background-color: #232326;
+    border: 1px solid #2f2f35;
+    border-radius: 8px;
+    padding: 9px 16px;
     font-weight: 500;
-    color: #e0e0e0;
+    color: #e6e4df;
     min-height: 20px;
 }
 QPushButton:hover {
-    background-color: #35353d;
-    border-color: #e8a23a;
+    background-color: #2b2b30;
+    border-color: #3d3d45;
 }
 QPushButton:pressed {
-    background-color: #e8a23a;
-    color: #1a1a1e;
+    background-color: #1b1b1e;
 }
 QPushButton:disabled {
-    background-color: #222226;
-    color: #555;
-    border-color: #2a2a30;
+    background-color: #1b1b1e;
+    color: #4e4e55;
+    border-color: #262629;
 }
+/* Primary — the only accent-filled button */
 QPushButton#primaryBtn {
-    background-color: #e8a23a;
-    color: #1a1a1e;
-    font-weight: 700;
-    border: none;
+    background-color: #c05a2e;
+    color: #fff5ee;
+    font-weight: 600;
+    border: 1px solid #c05a2e;
 }
 QPushButton#primaryBtn:hover {
-    background-color: #f0b04a;
+    background-color: #d97a4a;
+    border-color: #d97a4a;
+}
+QPushButton#primaryBtn:pressed {
+    background-color: #a84a24;
+    border-color: #a84a24;
 }
 QPushButton#primaryBtn:disabled {
-    background-color: #5a4a20;
-    color: #888;
+    background-color: #3a2419;
+    border-color: #3a2419;
+    color: #8a6a58;
 }
-QPushButton#dangerBtn {
-    background-color: #c0392b;
-    color: #fff;
-    border: none;
-}
-QPushButton#dangerBtn:hover {
-    background-color: #e74c3c;
-}
+/* Secondary — muted teal */
 QPushButton#writeBtn {
-    background-color: #27ae60;
-    color: #fff;
-    font-weight: 700;
-    border: none;
+    background-color: #2c5a4d;
+    color: #eafff3;
+    font-weight: 600;
+    border: 1px solid #34695a;
 }
 QPushButton#writeBtn:hover {
-    background-color: #2ecc71;
+    background-color: #37705f;
 }
+QPushButton#writeBtn:disabled {
+    background-color: #1e2f29;
+    border-color: #24352e;
+    color: #5c7c70;
+}
+/* Tertiary — bordered ghost */
 QPushButton#exportBtn {
-    background-color: #2980b9;
-    color: #fff;
-    font-weight: 700;
-    border: none;
+    background-color: transparent;
+    border: 1px solid #2f2f35;
+    color: #b6b4af;
+    font-weight: 500;
 }
 QPushButton#exportBtn:hover {
-    background-color: #3498db;
+    background-color: #202024;
+    border-color: #3d3d45;
+    color: #f2f0eb;
 }
 QPushButton#exportBtn:disabled {
-    background-color: #1a3a50;
-    color: #888;
+    background-color: transparent;
+    border-color: #262629;
+    color: #4e4e55;
 }
+/* Destructive — ghost, tinted */
+QPushButton#dangerBtn {
+    background-color: transparent;
+    border: 1px solid #4a2723;
+    color: #e2796a;
+    font-weight: 500;
+}
+QPushButton#dangerBtn:hover {
+    background-color: #2b1614;
+    border-color: #6b3931;
+}
+QPushButton#dangerBtn:disabled {
+    background-color: transparent;
+    border-color: #2b1614;
+    color: #6b4a44;
+}
+
 QComboBox {
-    background-color: #2a2a30;
-    border: 1px solid #3a3a42;
-    border-radius: 6px;
-    padding: 6px 10px;
+    background-color: #17171a;
+    border: 1px solid #2f2f35;
+    border-radius: 8px;
+    padding: 7px 10px;
     min-height: 20px;
+    color: #f2f0eb;
 }
 QComboBox:hover {
-    border-color: #e8a23a;
+    border-color: #3d3d45;
 }
 QComboBox QAbstractItemView {
-    background-color: #2a2a30;
-    border: 1px solid #3a3a42;
-    selection-background-color: #e8a23a;
-    selection-color: #1a1a1e;
+    background-color: #1d1d20;
+    border: 1px solid #2f2f35;
+    border-radius: 8px;
+    selection-background-color: #c05a2e;
+    selection-color: #fff5ee;
+    outline: none;
 }
 QComboBox::drop-down {
     border: none;
     width: 24px;
 }
+
 QLineEdit, QTextEdit, QPlainTextEdit {
-    background-color: #222226;
-    border: 1px solid #3a3a42;
-    border-radius: 6px;
+    background-color: #17171a;
+    border: 1px solid #2a2a2f;
+    border-radius: 8px;
     padding: 10px 12px;
-    color: #e0e0e0;
-    selection-background-color: #e8a23a;
-    selection-color: #1a1a1e;
+    color: #f2f0eb;
+    selection-background-color: #c05a2e;
+    selection-color: #fff5ee;
 }
 QLineEdit {
     min-height: 22px;
 }
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
-    border-color: #e8a23a;
+    border-color: #c05a2e;
 }
+/* Hints should sit well behind real values */
+QLineEdit[echoMode="0"]::placeholder {
+    color: #4e4e55;
+}
+
 QTableWidget {
-    background-color: #1e1e22;
-    border: 1px solid #2a2a30;
-    border-radius: 6px;
-    gridline-color: #2a2a30;
-    selection-background-color: #3a3520;
+    background-color: #1d1d20;
+    border: 1px solid #2a2a2f;
+    border-radius: 10px;
+    gridline-color: #26262a;
+    selection-background-color: #2b1c14;
+    outline: none;
 }
 QTableWidget::item {
     padding: 6px 8px;
-    border-bottom: 1px solid #2a2a30;
+    border-bottom: 1px solid #26262a;
 }
 QTableWidget::item:selected {
-    background-color: #3a3520;
-    color: #e8a23a;
+    background-color: #2b1c14;
+    color: #e0a06a;
 }
 QHeaderView::section {
-    background-color: #222226;
-    color: #a0a0a0;
+    background-color: #1d1d20;
+    color: #7e7c78;
     border: none;
-    border-bottom: 2px solid #e8a23a;
+    border-bottom: 1px solid #2a2a2f;
     padding: 8px;
     font-weight: 600;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    font-size: 10px;
+    letter-spacing: 1px;
 }
+
 QProgressBar {
-    background-color: #222226;
-    border: 1px solid #2a2a30;
-    border-radius: 4px;
+    background-color: #17171a;
+    border: 1px solid #2a2a2f;
+    border-radius: 5px;
     height: 8px;
     text-align: center;
     font-size: 10px;
 }
 QProgressBar::chunk {
-    background-color: #e8a23a;
-    border-radius: 3px;
+    background-color: #c05a2e;
+    border-radius: 4px;
 }
+
 QScrollArea {
     border: none;
+    background: transparent;
 }
+/* The widget inside the viewport keeps painting with Qt's default (light)
+   brush unless it is explicitly cleared — otherwise it shows as a white strip
+   wherever the content doesn't cover it. */
+QScrollArea > QWidget > QWidget {
+    background: transparent;
+}
+/* The groove must be painted explicitly. Left transparent, Qt falls back to
+   the default (light) brush and the scrollbar shows as a white bar. */
 QScrollBar:vertical {
-    background-color: #1a1a1e;
+    background-color: #141416;
     width: 10px;
     border: none;
+    margin: 0;
 }
 QScrollBar::handle:vertical {
-    background-color: #3a3a42;
+    background-color: #2f2f35;
     border-radius: 5px;
     min-height: 30px;
 }
 QScrollBar::handle:vertical:hover {
-    background-color: #e8a23a;
+    background-color: #3d3d45;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background-color: #141416;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0;
+    border: none;
+    background: none;
 }
+QScrollBar:horizontal {
+    background-color: #141416;
+    height: 10px;
+    border: none;
+    margin: 0;
+}
+QScrollBar::handle:horizontal {
+    background-color: #2f2f35;
+    border-radius: 5px;
+    min-width: 30px;
+}
+QScrollBar::handle:horizontal:hover {
+    background-color: #3d3d45;
+}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background-color: #141416;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
+    border: none;
+    background: none;
+}
+
+/* ── Tabs: pill-shaped active state ── */
 QTabWidget::pane {
-    border: 1px solid #2a2a30;
-    border-radius: 6px;
-    background-color: #1e1e22;
+    border: none;
+    background: transparent;
+    top: 4px;
 }
 QTabBar::tab {
-    background-color: #222226;
-    color: #a0a0a0;
-    border: 1px solid #2a2a30;
-    border-bottom: none;
+    background-color: transparent;
+    color: #8a8a90;
+    border: none;
     padding: 8px 16px;
-    margin-right: 2px;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
+    margin-right: 4px;
+    border-radius: 8px;
     font-weight: 500;
 }
 QTabBar::tab:selected {
-    background-color: #1e1e22;
-    color: #e8a23a;
-    border-bottom: 2px solid #e8a23a;
+    background-color: #e0a06a;
+    color: #1a1a1d;
+    font-weight: 600;
 }
 QTabBar::tab:hover:!selected {
-    color: #e0e0e0;
+    background-color: #202024;
+    color: #f2f0eb;
 }
+
+/* ── Checkboxes: filled when checked, hairline when not ── */
 QCheckBox {
-    spacing: 8px;
+    spacing: 9px;
+    color: #d8d6d1;
 }
 QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
+    width: 15px;
+    height: 15px;
+    border-radius: 5px;
     border: 1px solid #3a3a42;
-    background-color: #222226;
+    background-color: transparent;
+}
+QCheckBox::indicator:hover {
+    border-color: #5f5f6655f;
 }
 QCheckBox::indicator:checked {
-    background-color: #e8a23a;
-    border-color: #e8a23a;
+    background-color: #c05a2e;
+    border-color: #c05a2e;
 }
+
 QSplitter::handle {
-    background-color: #2a2a30;
+    background-color: #232326;
     width: 2px;
 }
 QSplitter::handle:hover {
-    background-color: #e8a23a;
+    background-color: #2f2f35;
 }
+
 QLabel#statusLabel {
-    color: #888;
+    color: #7e7c78;
     font-size: 11px;
 }
 QLabel#dropLabel {
-    color: #666;
+    color: #b6b4af;
     font-size: 15px;
-    font-weight: 300;
+    font-weight: 400;
 }
 QLabel#titleLabel {
-    font-family: 'Bebas Neue', 'Arial Narrow', sans-serif;
-    font-size: 28px;
-    font-weight: 400;
-    color: #e8a23a;
-    letter-spacing: 2px;
+    font-size: 26px;
+    font-weight: 800;
+    color: #f2f0eb;
+    letter-spacing: 1px;
 }
 QLabel#subtitleLabel {
     font-size: 11px;
-    color: #666;
+    color: #6f6d6a;
     font-weight: 400;
+}
+/* Section eyebrow, for cards that draw their own label */
+QLabel#eyebrow {
+    color: #d1935e;
+    font-size: 11px;
+    font-weight: 700;
     letter-spacing: 1px;
+    background: transparent;
+}
+QLabel#cardHint {
+    color: #6f6d6a;
+    font-size: 11px;
+    background: transparent;
+}
+/* Connection status pill */
+QLabel#statusPill {
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: 11px;
+    background-color: #16241d;
+    border: 1px solid #2c5a4d;
+    color: #7bc9a0;
+}
+QLabel#statusPill[state="off"] {
+    background-color: #2b1614;
+    border: 1px solid #4a2723;
+    color: #e2796a;
+}
+QLabel#statusPill[state="wait"] {
+    background-color: #201a15;
+    border: 1px solid #3d3128;
+    color: #d1935e;
 }
 """
 
@@ -1922,29 +2053,43 @@ QLabel#subtitleLabel {
 class DropZone(QFrame):
     files_dropped = Signal(list)
 
+    # Idle reads as a quiet card; only an active drag earns the accent.
+    _IDLE_QSS = """
+        DropZone {
+            border: 1px solid #2a2a2f;
+            border-radius: 12px;
+            background-color: #1d1d20;
+        }
+        DropZone:hover {
+            border-color: #3d3d45;
+            background-color: #202024;
+        }
+    """
+    _ACTIVE_QSS = """
+        DropZone {
+            border: 1px solid #c05a2e;
+            border-radius: 12px;
+            background-color: #221812;
+        }
+    """
+
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
         self.setMinimumHeight(120)
-        self.setStyleSheet("""
-            DropZone {
-                border: 2px dashed #3a3a42;
-                border-radius: 12px;
-                background-color: #1e1e22;
-            }
-            DropZone:hover {
-                border-color: #e8a23a;
-                background-color: #222226;
-            }
-        """)
+        self.setStyleSheet(self._IDLE_QSS)
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(6)
 
         icon_label = QLabel("📷")
-        icon_label.setStyleSheet("font-size: 32px; background: transparent; border: none;")
+        icon_label.setStyleSheet(
+            "font-size: 22px; background-color: #232326; border: 1px solid #2f2f35;"
+            "border-radius: 10px; padding: 8px;"
+        )
         icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(icon_label)
+        layout.addWidget(icon_label, alignment=Qt.AlignCenter)
 
         text_label = QLabel("Drop photos here or click Browse")
         text_label.setObjectName("dropLabel")
@@ -1954,7 +2099,7 @@ class DropZone(QFrame):
 
         formats_label = QLabel("JPEG  ·  HEIC  ·  TIFF  ·  PNG  ·  RAW  ·  DNG  ·  CR2/CR3  ·  NEF  ·  ARW  ·  ORF  ·  RAF")
         formats_label.setStyleSheet(
-            "color: #555; font-size: 11px; background: transparent; border: none;"
+            "color: #56545a; font-size: 11px; background: transparent; border: none;"
         )
         formats_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(formats_label)
@@ -1962,39 +2107,13 @@ class DropZone(QFrame):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-            self.setStyleSheet("""
-                DropZone {
-                    border: 2px solid #e8a23a;
-                    border-radius: 12px;
-                    background-color: #2a2520;
-                }
-            """)
+            self.setStyleSheet(self._ACTIVE_QSS)
 
     def dragLeaveEvent(self, event):
-        self.setStyleSheet("""
-            DropZone {
-                border: 2px dashed #3a3a42;
-                border-radius: 12px;
-                background-color: #1e1e22;
-            }
-            DropZone:hover {
-                border-color: #e8a23a;
-                background-color: #222226;
-            }
-        """)
+        self.setStyleSheet(self._IDLE_QSS)
 
     def dropEvent(self, event: QDropEvent):
-        self.setStyleSheet("""
-            DropZone {
-                border: 2px dashed #3a3a42;
-                border-radius: 12px;
-                background-color: #1e1e22;
-            }
-            DropZone:hover {
-                border-color: #e8a23a;
-                background-color: #222226;
-            }
-        """)
+        self.setStyleSheet(self._IDLE_QSS)
         urls = event.mimeData().urls()
         files = []
         for url in urls:
@@ -2017,10 +2136,10 @@ class DropZone(QFrame):
 
 class StatusDot(QLabel):
     COLOURS = {
-        "pending": "#555",
-        "processing": "#e8a23a",
-        "done": "#27ae60",
-        "error": "#c0392b",
+        "pending": "#5f5f66",
+        "processing": "#d1935e",
+        "done": "#7bc9a0",
+        "error": "#e2796a",
     }
 
     def __init__(self, status="pending"):
@@ -2029,7 +2148,7 @@ class StatusDot(QLabel):
         self.set_status(status)
 
     def set_status(self, status):
-        colour = self.COLOURS.get(status, "#555")
+        colour = self.COLOURS.get(status, "#5f5f66")
         self.setStyleSheet(f"""
             background-color: {colour};
             border-radius: 6px;
@@ -2112,21 +2231,24 @@ class PhotoScribe(QMainWindow):
         header = QHBoxLayout()
 
         title_col = QVBoxLayout()
-        title = QLabel("PhotoScribe")
+        title_col.setSpacing(2)
+        title = QLabel("PHOTOSCRIBE")
         title.setObjectName("titleLabel")
         title_col.addWidget(title)
         subtitle = QLabel(
-            f"AI-powered metadata generation using local models   ·   v{APP_VERSION}"
+            f"AI-powered metadata generation using local models  ·  v{APP_VERSION}"
         )
         subtitle.setObjectName("subtitleLabel")
         title_col.addWidget(subtitle)
         header.addLayout(title_col)
         header.addStretch()
 
-        # Ollama status
+        # Backend status, as a pill badge. The colour comes from the `state`
+        # property so the pill restyles without rebuilding its stylesheet.
         self.ollama_status = QLabel("● Checking Ollama...")
-        self.ollama_status.setStyleSheet("color: #e8a23a; font-size: 12px;")
-        header.addWidget(self.ollama_status)
+        self.ollama_status.setObjectName("statusPill")
+        self.ollama_status.setProperty("state", "wait")
+        header.addWidget(self.ollama_status, alignment=Qt.AlignVCenter)
 
         main_layout.addLayout(header)
 
@@ -2178,7 +2300,7 @@ class PhotoScribe(QMainWindow):
         self.photo_table.setAlternatingRowColors(True)
         self.photo_table.setStyleSheet(
             self.photo_table.styleSheet() +
-            "QTableWidget { alternate-background-color: #1c1c20; }"
+            "QTableWidget { alternate-background-color: #1f1f23; }"
         )
         self.photo_table.currentCellChanged.connect(self._on_photo_selected)
         self.photo_table.cellDoubleClicked.connect(self._on_photo_double_clicked)
@@ -2189,7 +2311,7 @@ class PhotoScribe(QMainWindow):
         # Folder name
         self.folder_name_label = QLabel("")
         self.folder_name_label.setStyleSheet(
-            "color: #e8a23a; font-size: 12px; font-weight: 600; border: none;"
+            "color: #d1935e; font-size: 12px; font-weight: 600; border: none;"
         )
         left_layout.addWidget(self.folder_name_label)
 
@@ -2224,11 +2346,11 @@ class PhotoScribe(QMainWindow):
         settings_inner = QWidget()
         settings_scroll.setWidget(settings_inner)
         settings_layout = QVBoxLayout(settings_inner)
-        settings_layout.setSpacing(8)
-        settings_layout.setContentsMargins(0, 0, 6, 0)
+        settings_layout.setSpacing(14)   # consistent gap between cards
+        settings_layout.setContentsMargins(0, 2, 6, 0)
 
         # Model selection
-        model_group = QGroupBox("Model")
+        model_group = QGroupBox("MODEL")
         model_layout = QHBoxLayout(model_group)
         self.model_combo = QComboBox()
         self.model_combo.setMinimumWidth(200)
@@ -2264,7 +2386,7 @@ class PhotoScribe(QMainWindow):
         dl_layout.setSpacing(4)
         self.model_download_label = QLabel("")
         self.model_download_label.setStyleSheet(
-            "font-size: 14px; font-weight: 600; color: #e8a23a; border: none;"
+            "font-size: 14px; font-weight: 600; color: #d1935e; border: none;"
         )
         dl_layout.addWidget(self.model_download_label)
         self.model_download_progress = QProgressBar()
@@ -2278,10 +2400,13 @@ class PhotoScribe(QMainWindow):
         settings_layout.addWidget(self.model_download_widget)
 
         # Prompt
-        prompt_group = QGroupBox("Prompt")
+        prompt_group = QGroupBox("PROMPT")
         prompt_layout = QVBoxLayout(prompt_group)
         self.prompt_edit = QTextEdit()
-        self.prompt_edit.setMaximumHeight(120)
+        # Tall enough that the default prompt reads in full without scrolling,
+        # capped so a long custom prompt can't crowd out the cards below it.
+        self.prompt_edit.setMinimumHeight(155)
+        self.prompt_edit.setMaximumHeight(220)
         self.prompt_edit.setPlaceholderText("Enter your prompt for the AI model...")
         self.prompt_edit.setText(
             "Analyse this photograph and generate metadata for it.\n\n"
@@ -2296,7 +2421,7 @@ class PhotoScribe(QMainWindow):
 
         preset_row = QHBoxLayout()
         preset_label = QLabel("Presets:")
-        preset_label.setStyleSheet("color: #888; font-size: 11px;")
+        preset_label.setStyleSheet("color: #7e7c78; font-size: 11px;")
         preset_row.addWidget(preset_label)
 
         self.prompt_preset_combo = QComboBox()
@@ -2318,7 +2443,7 @@ class PhotoScribe(QMainWindow):
 
         delete_preset_btn = QPushButton("Delete")
         delete_preset_btn.setFixedHeight(24)
-        delete_preset_btn.setStyleSheet("font-size: 11px; padding: 2px 10px; color: #c0392b;")
+        delete_preset_btn.setStyleSheet("font-size: 11px; padding: 2px 10px; color: #e2796a;")
         delete_preset_btn.clicked.connect(self._delete_prompt_preset)
         preset_row.addWidget(delete_preset_btn)
 
@@ -2330,21 +2455,21 @@ class PhotoScribe(QMainWindow):
         self._init_prompt_presets()
 
         # Batch context
-        context_group = QGroupBox("Batch Context (applied to all photos)")
+        context_group = QGroupBox("BATCH CONTEXT")
         context_layout = QGridLayout(context_group)
         context_layout.setSpacing(10)
         context_layout.setContentsMargins(12, 8, 12, 12)
 
-        # Folder context detection toggle
+        # Card header row: the descriptor that used to live in the group title
+        # (it reads as a hint, not a heading), then the folder-context toggle.
         folder_ctx_row = QHBoxLayout()
-        self.folder_context_check = QCheckBox("Use folder context")
-        self.folder_context_check.setChecked(True)
-        self.folder_context_check.toggled.connect(self._on_folder_context_toggled)
-        folder_ctx_row.addWidget(self.folder_context_check)
+        context_hint = QLabel("applied to all photos")
+        context_hint.setObjectName("cardHint")
+        folder_ctx_row.addWidget(context_hint)
 
         self.folder_context_label = QLabel("")
         self.folder_context_label.setStyleSheet(
-            "color: #e8a23a; font-size: 11px; font-style: italic;"
+            "color: #d1935e; font-size: 11px; font-style: italic;"
         )
         folder_ctx_row.addWidget(self.folder_context_label, 1)
 
@@ -2354,6 +2479,11 @@ class PhotoScribe(QMainWindow):
         self.clear_folder_ctx_btn.setVisible(False)
         self.clear_folder_ctx_btn.clicked.connect(self._clear_folder_context)
         folder_ctx_row.addWidget(self.clear_folder_ctx_btn)
+
+        self.folder_context_check = QCheckBox("Use folder context")
+        self.folder_context_check.setChecked(True)
+        self.folder_context_check.toggled.connect(self._on_folder_context_toggled)
+        folder_ctx_row.addWidget(self.folder_context_check)
 
         context_layout.addLayout(folder_ctx_row, 0, 0, 1, 2)
 
@@ -2368,7 +2498,7 @@ class PhotoScribe(QMainWindow):
         for row_idx, (label, key, placeholder) in enumerate(fields):
             row = row_idx + 1  # offset by 1 for the folder context row
             lbl = QLabel(label)
-            lbl.setStyleSheet("color: #a0a0a0; font-size: 12px;")
+            lbl.setStyleSheet("color: #8f8d89; font-size: 12px;")
             context_layout.addWidget(lbl, row, 0)
             edit = QLineEdit()
             edit.setPlaceholderText(placeholder)
@@ -2377,7 +2507,7 @@ class PhotoScribe(QMainWindow):
         settings_layout.addWidget(context_group)
 
         # Options
-        options_group = QGroupBox("Options")
+        options_group = QGroupBox("OPTIONS")
         options_layout = QVBoxLayout(options_group)
 
         # Checkboxes in two columns to save vertical space
@@ -2463,7 +2593,7 @@ class PhotoScribe(QMainWindow):
 
         sidecar_naming_row = QHBoxLayout()
         sidecar_naming_label = QLabel("DAM")
-        sidecar_naming_label.setStyleSheet("color: #a0a0a0; font-size: 12px;")
+        sidecar_naming_label.setStyleSheet("color: #8f8d89; font-size: 12px;")
         sidecar_naming_label.setFixedWidth(110)
         sidecar_naming_row.addWidget(sidecar_naming_label)
         self.sidecar_naming_combo = QComboBox()
@@ -2481,7 +2611,7 @@ class PhotoScribe(QMainWindow):
 
         response_length_row = QHBoxLayout()
         response_length_label = QLabel("Keyword density:")
-        response_length_label.setStyleSheet("color: #a0a0a0; font-size: 12px;")
+        response_length_label.setStyleSheet("color: #8f8d89; font-size: 12px;")
         response_length_label.setFixedWidth(110)
         response_length_row.addWidget(response_length_label)
         self.response_length_combo = QComboBox()
@@ -2506,7 +2636,7 @@ class PhotoScribe(QMainWindow):
             "these terms where applicable, giving you consistent keywording."
         )
         kw_desc.setWordWrap(True)
-        kw_desc.setStyleSheet("color: #888; font-size: 12px; margin-bottom: 8px;")
+        kw_desc.setStyleSheet("color: #7e7c78; font-size: 12px; margin-bottom: 8px;")
         kw_layout.addWidget(kw_desc)
 
         self.keywords_edit = QPlainTextEdit()
@@ -2539,7 +2669,7 @@ class PhotoScribe(QMainWindow):
             "contains a match, the corresponding preset/keywords are applied."
         )
         presets_desc.setWordWrap(True)
-        presets_desc.setStyleSheet("color: #888; font-size: 12px; margin-bottom: 8px;")
+        presets_desc.setStyleSheet("color: #7e7c78; font-size: 12px; margin-bottom: 8px;")
         presets_layout.addWidget(presets_desc)
 
         self.presets_table = QTableWidget()
@@ -2593,7 +2723,7 @@ class PhotoScribe(QMainWindow):
         self.results_table.setAlternatingRowColors(True)
         self.results_table.setStyleSheet(
             self.results_table.styleSheet() +
-            "QTableWidget { alternate-background-color: #1c1c20; }"
+            "QTableWidget { alternate-background-color: #1f1f23; }"
         )
         self.results_table.currentCellChanged.connect(self._on_result_selected)
         results_list_layout.addWidget(self.results_table)
@@ -2607,7 +2737,7 @@ class PhotoScribe(QMainWindow):
 
         self.results_pos_label = QLabel("0 / 0")
         self.results_pos_label.setAlignment(Qt.AlignCenter)
-        self.results_pos_label.setStyleSheet("color: #888; font-size: 11px;")
+        self.results_pos_label.setStyleSheet("color: #7e7c78; font-size: 11px;")
         results_nav_row.addWidget(self.results_pos_label)
 
         self.results_next_btn = QPushButton("Next ▶")
@@ -2628,14 +2758,14 @@ class PhotoScribe(QMainWindow):
         # Folder path in results
         self.detail_folder = QLabel("")
         self.detail_folder.setStyleSheet(
-            "font-size: 11px; color: #888; border: none; padding: 0;"
+            "font-size: 11px; color: #7e7c78; border: none; padding: 0;"
         )
         detail_layout.addWidget(self.detail_folder)
 
         # Filename header
         self.detail_filename = QLabel("Select a photo to view metadata")
         self.detail_filename.setStyleSheet(
-            "font-size: 14px; font-weight: 600; color: #e8a23a; "
+            "font-size: 14px; font-weight: 600; color: #d1935e; "
             "padding: 4px 0; border: none;"
         )
         detail_layout.addWidget(self.detail_filename)
@@ -2645,8 +2775,8 @@ class PhotoScribe(QMainWindow):
         self.detail_preview.setFixedHeight(380)
         self.detail_preview.setAlignment(Qt.AlignCenter)
         self.detail_preview.setStyleSheet(
-            "background-color: #1a1a1e; border: 1px solid #2a2a30; "
-            "border-radius: 6px; color: #555; font-size: 12px;"
+            "background-color: #17171a; border: 1px solid #2a2a2f; "
+            "border-radius: 6px; color: #5f5f66; font-size: 12px;"
         )
         self.detail_preview.setText("No preview")
         detail_layout.addWidget(self.detail_preview)
@@ -2654,7 +2784,7 @@ class PhotoScribe(QMainWindow):
         # Title
         self.detail_title_label = QLabel("TITLE")
         self.detail_title_label.setStyleSheet(
-            "color: #888; font-size: 10px; font-weight: 600; "
+            "color: #7e7c78; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
         detail_layout.addWidget(self.detail_title_label)
@@ -2666,7 +2796,7 @@ class PhotoScribe(QMainWindow):
         # Caption
         self.detail_caption_label = QLabel("CAPTION")
         self.detail_caption_label.setStyleSheet(
-            "color: #888; font-size: 10px; font-weight: 600; "
+            "color: #7e7c78; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
         detail_layout.addWidget(self.detail_caption_label)
@@ -2680,7 +2810,7 @@ class PhotoScribe(QMainWindow):
         # Keywords
         kw_label = QLabel("KEYWORDS")
         kw_label.setStyleSheet(
-            "color: #888; font-size: 10px; font-weight: 600; "
+            "color: #7e7c78; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
         detail_layout.addWidget(kw_label)
@@ -2695,7 +2825,7 @@ class PhotoScribe(QMainWindow):
 
         # Keyword count
         self.kw_count_label = QLabel("")
-        self.kw_count_label.setStyleSheet("color: #555; font-size: 11px; border: none;")
+        self.kw_count_label.setStyleSheet("color: #5f5f66; font-size: 11px; border: none;")
         detail_layout.addWidget(self.kw_count_label)
 
         detail_layout.addStretch()
@@ -2717,7 +2847,7 @@ class PhotoScribe(QMainWindow):
         self.log_text.setReadOnly(True)
         self.log_text.setStyleSheet(
             "font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; "
-            "font-size: 11px; color: #888;"
+            "font-size: 11px; color: #7e7c78;"
         )
         log_layout.addWidget(self.log_text)
         self.tabs.addTab(log_tab, "Log")
@@ -2895,6 +3025,14 @@ class PhotoScribe(QMainWindow):
 
     # ── Logging ──
 
+    def _set_status_pill(self, text, state):
+        """Update the header connection pill. `state` is on / off / wait —
+        the stylesheet picks the colour off the property, so re-polish it."""
+        self.ollama_status.setText(text)
+        self.ollama_status.setProperty("state", state)
+        self.ollama_status.style().unpolish(self.ollama_status)
+        self.ollama_status.style().polish(self.ollama_status)
+
     def log(self, msg):
         self.log_text.appendPlainText(msg)
 
@@ -2970,14 +3108,12 @@ class PhotoScribe(QMainWindow):
                     self.model_combo.setCurrentIndex(i)
                     break
 
-            self.ollama_status.setText(
-                f"● {backend_label} connected ({len(model_names)} models)"
-            )
-            self.ollama_status.setStyleSheet("color: #27ae60; font-size: 12px;")
+            n = len(model_names)
+            self._set_status_pill(
+                f"● {backend_label} · {n} model{'s' if n != 1 else ''}", "on")
             self.log(f"Connected to {backend_label} at {connected_url} ({len(model_names)} models)")
         else:
-            self.ollama_status.setText("● Not connected")
-            self.ollama_status.setStyleSheet("color: #c0392b; font-size: 12px;")
+            self._set_status_pill("● Not connected", "off")
             self.log(
                 f"Cannot connect at {url}\n"
                 "  Ollama default:   http://localhost:11434\n"
@@ -3089,19 +3225,19 @@ class PhotoScribe(QMainWindow):
             item = QTableWidgetItem(photo.filename)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             if photo.status == "error":
-                item.setForeground(QColor("#c0392b"))
+                item.setForeground(QColor("#e2796a"))
             self.photo_table.setItem(row, 1, item)
 
             # Status text
             status_item = QTableWidgetItem(photo.status.capitalize())
             status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
             status_colours = {
-                "pending": "#555",
-                "processing": "#e8a23a",
-                "done": "#27ae60",
-                "error": "#c0392b",
+                "pending": "#5f5f66",
+                "processing": "#d1935e",
+                "done": "#7bc9a0",
+                "error": "#e2796a",
             }
-            status_item.setForeground(QColor(status_colours.get(photo.status, "#555")))
+            status_item.setForeground(QColor(status_colours.get(photo.status, "#5f5f66")))
             self.photo_table.setItem(row, 2, status_item)
 
             # Title preview
@@ -3130,12 +3266,12 @@ class PhotoScribe(QMainWindow):
         item = QTableWidgetItem(photo.filename)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         if photo.status == "error":
-            item.setForeground(QColor("#c0392b"))
+            item.setForeground(QColor("#e2796a"))
         self.photo_table.setItem(row, 1, item)
         status_item = QTableWidgetItem(photo.status.capitalize())
         status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
-        status_colours = {"pending": "#555", "processing": "#e8a23a", "done": "#27ae60", "error": "#c0392b"}
-        status_item.setForeground(QColor(status_colours.get(photo.status, "#555")))
+        status_colours = {"pending": "#5f5f66", "processing": "#d1935e", "done": "#7bc9a0", "error": "#e2796a"}
+        status_item.setForeground(QColor(status_colours.get(photo.status, "#5f5f66")))
         self.photo_table.setItem(row, 2, status_item)
         title_text = photo.metadata.title if photo.metadata else ""
         title_item = QTableWidgetItem(title_text)
@@ -3667,7 +3803,7 @@ class PhotoScribe(QMainWindow):
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
         plain_style = (
-            "color: #888; font-size: 10px; font-weight: 600; "
+            "color: #7e7c78; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
         t_kept = getattr(photo.metadata, "title_kept", False)
@@ -4392,7 +4528,7 @@ class PhotoScribe(QMainWindow):
         self.model_download_widget.setVisible(True)
         self.model_download_label.setText(f"Downloading {model_name}...")
         self.model_download_label.setStyleSheet(
-            "font-size: 14px; font-weight: 600; color: #e8a23a; border: none;"
+            "font-size: 14px; font-weight: 600; color: #d1935e; border: none;"
         )
         self.model_download_progress.setValue(0)
 
@@ -4440,14 +4576,14 @@ class PhotoScribe(QMainWindow):
             self.model_download_progress.setValue(100)
             self.model_download_label.setText(message)
             self.model_download_label.setStyleSheet(
-                "font-size: 14px; font-weight: 600; color: #27ae60; border: none;"
+                "font-size: 14px; font-weight: 600; color: #7bc9a0; border: none;"
             )
             QTimer.singleShot(1000, self._refresh_models)
             QTimer.singleShot(8000, lambda: self.model_download_widget.setVisible(False))
         else:
             self.model_download_label.setText(message)
             self.model_download_label.setStyleSheet(
-                "font-size: 14px; font-weight: 600; color: #c0392b; border: none;"
+                "font-size: 14px; font-weight: 600; color: #e2796a; border: none;"
             )
         # Clean up thread reference safely
         QTimer.singleShot(2000, lambda: setattr(self, '_pull_thread', None))
@@ -4464,15 +4600,15 @@ def main():
 
     # Dark palette
     palette = QPalette()
-    palette.setColor(QPalette.Window, QColor("#1a1a1e"))
+    palette.setColor(QPalette.Window, QColor("#141416"))
     palette.setColor(QPalette.WindowText, QColor("#e0e0e0"))
-    palette.setColor(QPalette.Base, QColor("#222226"))
-    palette.setColor(QPalette.AlternateBase, QColor("#1c1c20"))
+    palette.setColor(QPalette.Base, QColor("#17171a"))
+    palette.setColor(QPalette.AlternateBase, QColor("#1f1f23"))
     palette.setColor(QPalette.Text, QColor("#e0e0e0"))
-    palette.setColor(QPalette.Button, QColor("#2a2a30"))
+    palette.setColor(QPalette.Button, QColor("#232326"))
     palette.setColor(QPalette.ButtonText, QColor("#e0e0e0"))
-    palette.setColor(QPalette.Highlight, QColor("#e8a23a"))
-    palette.setColor(QPalette.HighlightedText, QColor("#1a1a1e"))
+    palette.setColor(QPalette.Highlight, QColor("#c05a2e"))
+    palette.setColor(QPalette.HighlightedText, QColor("#141416"))
     app.setPalette(palette)
 
     window = PhotoScribe()
