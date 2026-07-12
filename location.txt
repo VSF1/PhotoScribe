@@ -1,0 +1,1 @@
+Location: this photo was taken at {location}.

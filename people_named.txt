@@ -1,0 +1,1 @@
+People named in this photo: {persons}. Use these exact names when referring to them in the title and caption, and include them in the keywords. Never invent names. If other people appear who aren't named, refer to them neutrally (e.g. 'another person') without inventing names.

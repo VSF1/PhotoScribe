@@ -2,6 +2,57 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.6.0.1] — 2026-07-12
+
+### Added
+- **Modular AI Prompts ("Skills").** The logic for constructing the AI prompt is now loaded from external text files in a `prompt_skills/` directory. This makes the AI's behavior much more flexible and easier for users to customize without altering the source code. The skills are organized into `context` and `instructions` subdirectories.
+
+### Changed
+- **Centralized UI Styling.** The application's visual styles, previously managed in a large inline block within `photoscribe.py`, have been moved to dedicated `style.qss` (dark theme) and `style_light.qss` (light theme) files for better organization and maintainability.
+
+### Fixed
+- **Corrected AI prompt construction.** Fixed a significant bug where multiple, conflicting calls to build the AI prompt were overwriting each other, causing important context like location and face tags to be lost. The prompt is now built in a single, correct pass.
+
+## [1.6.0] — 2026-07-10
+
+### Changed
+- **Redesigned interface.** The window is reorganised into distinct cards — Model, Prompt, Batch Context, Options — each with a hairline border, rounded corners and its own section label, instead of one continuous scroll. The palette is warmer and far less saturated: the accent is now reserved for the things that actually mean something (the active tab, section labels, ticked checkboxes, and the Generate button), so nothing else competes for your eye.
+- **Clearer controls.** Buttons share one height and radius and are ranked by weight: Generate is solid accent, Write Metadata is a muted teal, Export/Import are bordered ghost buttons. Checkboxes are a filled accent square when ticked and a plain outline when not. Tabs get a pill-shaped active state, and the backend connection status is now a pill badge in the header.
+- **The prompt box is taller**, so the default prompt reads in full without scrolling.
+
+### Fixed
+- A stray white strip could appear at the right-hand edge of the settings panel, and the scrollbar rendered light against the dark theme.
+
+## [1.5.6] — 2026-07-10
+
+### Fixed
+- **The location option no longer switches itself off between sessions.** "Look up location from photo GPS / metadata" was never saved, so it silently reset to unticked on every launch — while the one-time consent *was* remembered, making it look as though the option should still be on. It now persists, as do "Use folder context" and the EXIF-date fallback.
+- **Location now takes effect when you enable it, and on Regenerate.** It used to be resolved once, when photos were loaded. Ticking the option afterwards, or re-running Regenerate, did nothing — you had to clear and reload the folder. The location is now resolved per photo when the metadata is generated.
+- **Each photo gets its own location.** Previously one location was sampled from the first few files and applied to the whole batch, so a folder spanning several places tagged them all identically — and a geotagged photo further down the list was never even looked at. Anything typed into the Location field still overrides everything, for every photo.
+- **Rural and coastal places are named properly.** The geocoder ignored OpenStreetMap's `locality` and `neighbourhood` fields, so a beach at Gerroa, NSW came back as the useless "New South Wales, Australia". It now reads them, giving "Gerroa, New South Wales, Australia".
+- **The lookup says what it found.** It logs the location resolved for each photo, and says so once when a photo has no GPS or place name at all, instead of failing silently.
+
+### Changed
+- **Geocoding results are cached and rate-limited.** Coordinates are rounded (~11m) and cached, so a folder shot in one place makes a single request, and requests are held to one per second in line with OpenStreetMap Nominatim's usage policy.
+
+## [1.5.5] — 2026-07-10
+
+### Fixed
+- **"Look up location from GPS" now actually runs on its own.** The location lookup was only executed when **Use folder context** was *also* enabled — with folder context off, enabling the GPS/location option did nothing at all (no network request, no location filled). Each source now runs on its own checkbox independently: folder-name detection, the EXIF-date fallback, and the location lookup no longer depend on one another. Reported on GitHub (#18).
+
+### Changed
+- **Location lookup renamed and clarified.** The option is now **"Look up location from photo GPS / metadata"**: it fills the Location field from the place name your cataloguer (e.g. Lightroom) already resolved — City/State/Country, from the file or its `.xmp` sidecar, with no network request — and only reverse-geocodes the GPS coordinates via OpenStreetMap when there's no such place name. The tooltip and consent dialog now describe this.
+
+## [1.5.4] — 2026-07-10
+
+### Fixed
+- **Location from RAW/DNG photos is no longer missed, so captions stop inventing far-away places.** PhotoScribe now reads GPS *and* the resolved place name (Sublocation / City / State / Country) from a photo's `.xmp` sidecar, not just from the file itself. RAW files geotagged in Lightroom or Geotag Photos Pro keep that data in the sidecar, so previously a RAW/DNG shot arrived with no location and the model would free-associate from the image alone — e.g. a Gaudí tower in Comillas, Spain captioned as being in Phuket, Thailand. JPEGs (GPS baked into EXIF) always worked; RAW now behaves the same. Reported on GitHub.
+- **The resolved place name is now preferred over a GPS lookup.** When a cataloguer (e.g. Lightroom) has already written City/State/Country, PhotoScribe uses that directly — exact and no network call — and only falls back to reverse-geocoding GPS coordinates when there's no place name to use.
+- **Accented keywords no longer show as "?" in Lightroom.** Keywords like *Château de Chenonceau* were written as Latin-1 and mis-decoded by readers. The IPTC block is now marked UTF-8 (`CodedCharacterSet=UTF8`) on every write, so accents survive round-trip.
+
+### Changed
+- **The photo's location is now treated as ground truth in the prompt.** When a Location is supplied, the model is explicitly told the photo was taken there and must not name a different city, region, or country even if the scene reminds it of somewhere else — and to describe the scene without naming a place when it isn't sure, rather than guessing.
+
 ## [1.5.3] — 2026-07-09
 
 ### Added

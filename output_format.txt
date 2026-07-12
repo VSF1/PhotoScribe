@@ -1,0 +1,3 @@
+
+Respond ONLY with valid JSON in this exact format, no other text:
+{"title": "Short descriptive title", "caption": "Detailed description of the image in 1-3 sentences", "keywords": ["keyword1", "keyword2", "keyword3"]}

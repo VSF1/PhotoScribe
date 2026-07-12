@@ -61,7 +61,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.6.0"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -249,34 +249,126 @@ def read_exif_date(filepath: str) -> Optional[str]:
 # ─────────────────────────────────────────────────────────
 
 def read_gps_coordinates(filepath: str) -> Optional[tuple]:
-    """Read GPS coordinates from photo EXIF data.
-    Returns (latitude, longitude) as floats, or None.
+    """Read GPS coordinates from a photo's EXIF/XMP data.
+
+    Checks the file itself AND any co-located .xmp sidecar — RAW files
+    (Fuji .RAF etc.) geotagged in Lightroom or Geotag Photos Pro keep the
+    GPS in the sidecar, not baked into the raw, so reading only the raw
+    silently misses it. Returns (latitude, longitude) as floats, or None.
     """
     exiftool = MetadataWriter.find_exiftool()
     if not exiftool:
         return None
-    try:
-        result = _run(
-            [exiftool, "-j", "-n", "-GPSLatitude", "-GPSLongitude", filepath],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            if data:
-                lat = data[0].get("GPSLatitude")
-                lon = data[0].get("GPSLongitude")
-                if lat is not None and lon is not None:
-                    return (float(lat), float(lon))
-    except Exception:
-        pass
+    targets = [str(filepath)] + MetadataWriter._sidecar_paths(filepath)
+    for tgt in targets:
+        try:
+            result = _run(
+                [exiftool, "-j", "-n", "-GPSLatitude", "-GPSLongitude", tgt],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                if data:
+                    lat = data[0].get("GPSLatitude")
+                    lon = data[0].get("GPSLongitude")
+                    if lat is not None and lon is not None:
+                        return (float(lat), float(lon))
+        except Exception:
+            continue
     return None
+
+
+def read_location_fields(filepath: str) -> Optional[str]:
+    """Read the human-readable location a cataloguer (e.g. Lightroom) already
+    resolved — Sublocation, City, State/Province, Country — from the file AND
+    any co-located .xmp sidecar. This is exact and needs no network, so it is
+    preferred over GPS reverse-geocoding. Returns a "Sublocation, City, State,
+    Country" string (deduped, in that order) or None if nothing is set.
+    """
+    exiftool = MetadataWriter.find_exiftool()
+    if not exiftool:
+        return None
+    # (json-key, exiftool-tag) in the order we want them to appear.
+    fields = [
+        ("Sublocation", "-XMP-iptcCore:Location"),
+        ("Location", "-IPTC:Sub-location"),
+        ("City", "-IPTC:City"),
+        ("City", "-XMP-photoshop:City"),
+        ("State", "-IPTC:Province-State"),
+        ("State", "-XMP-photoshop:State"),
+        ("Country", "-IPTC:Country-PrimaryLocationName"),
+        ("Country", "-XMP-photoshop:Country"),
+    ]
+    targets = [str(filepath)] + MetadataWriter._sidecar_paths(filepath)
+    # Collect the first non-empty value per conceptual slot, preserving order
+    # and de-duplicating (IPTC and XMP usually mirror each other).
+    slots = ["", "", "", ""]  # sublocation, city, state, country
+    slot_index = {"Sublocation": 0, "Location": 0, "City": 1,
+                  "State": 2, "Country": 3}
+    args = [exiftool, "-j"] + [tag for _, tag in fields]
+    for tgt in targets:
+        try:
+            result = _run(args + [tgt], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0 or not result.stdout:
+                continue
+            data = json.loads(result.stdout)
+            if not data:
+                continue
+            entry = data[0]
+            for jkey, tag in fields:
+                idx = slot_index[jkey]
+                if slots[idx]:
+                    continue
+                # exiftool strips the group prefix in -j output; the JSON key
+                # is the bare tag name.
+                bare = tag.split(":")[-1]
+                val = entry.get(bare)
+                if val is None:
+                    # Some tags share a JSON key (City/State/Country); the
+                    # first matching entry wins, which is fine.
+                    val = entry.get(jkey)
+                if val is not None and str(val).strip():
+                    slots[idx] = str(val).strip()
+        except Exception:
+            continue
+    parts, seen = [], set()
+    for s in slots:
+        if s and s.lower() not in seen:
+            seen.add(s.lower())
+            parts.append(s)
+    return ", ".join(parts) if parts else None
+
+
+# Nominatim's usage policy allows at most one request per second, and asks
+# that results be cached. Photos from one shoot share a location, so caching
+# on rounded coordinates (4dp ≈ 11m) turns a whole folder into one request.
+_geocode_cache = {}
+_geocode_lock = threading.Lock()
+_geocode_last_call = 0.0
+_GEOCODE_MIN_INTERVAL = 1.0
 
 
 def reverse_geocode(lat: float, lon: float) -> Optional[str]:
     """Reverse geocode via OpenStreetMap Nominatim (free, no API key).
-    NOTE: This makes an external network request.
+    NOTE: This makes an external network request. Results are cached and
+    rate-limited to one request per second per Nominatim's usage policy.
     Returns place description or None.
     """
+    global _geocode_last_call
+    key = (round(lat, 4), round(lon, 4))
+    with _geocode_lock:
+        if key in _geocode_cache:
+            return _geocode_cache[key]
+        wait = _GEOCODE_MIN_INTERVAL - (time.monotonic() - _geocode_last_call)
+        if wait > 0:
+            time.sleep(wait)
+        place = _reverse_geocode_uncached(lat, lon)
+        _geocode_last_call = time.monotonic()
+        _geocode_cache[key] = place
+        return place
+
+
+def _reverse_geocode_uncached(lat: float, lon: float) -> Optional[str]:
     try:
         url = (
             f"https://nominatim.openstreetmap.org/reverse"
@@ -290,8 +382,12 @@ def reverse_geocode(lat: float, lon: float) -> Optional[str]:
         data = resp.json()
         addr = data.get("address", {})
         parts = []
+        # "locality" and "neighbourhood" matter: rural and coastal places
+        # (e.g. Gerroa, NSW) come back only under those keys, and dropping
+        # them leaves you with a useless "New South Wales, Australia".
         for key in ["tourism", "natural", "leisure", "amenity",
-                    "hamlet", "village", "suburb", "town", "city"]:
+                    "hamlet", "village", "locality", "neighbourhood",
+                    "suburb", "town", "city"]:
             if key in addr:
                 parts.append(addr[key])
                 break
@@ -309,6 +405,24 @@ def reverse_geocode(lat: float, lon: float) -> Optional[str]:
             return ", ".join(display.split(", ")[:3])
     except Exception:
         pass
+    return None
+
+
+def resolve_photo_location(filepath: str) -> Optional[str]:
+    """The place this one photo was taken, or None.
+
+    Prefers the place name a cataloguer (e.g. Lightroom) already resolved into
+    the file or its .xmp sidecar — exact, and no network request. Only when
+    there is no such name does it reverse-geocode the photo's GPS coordinates.
+    Resolved per photo, so a folder spanning several places tags each one
+    correctly.
+    """
+    place = read_location_fields(filepath)
+    if place:
+        return place
+    coords = read_gps_coordinates(filepath)
+    if coords:
+        return reverse_geocode(coords[0], coords[1])
     return None
 
 # ─────────────────────────────────────────────────────────
@@ -348,9 +462,10 @@ class OllamaWorker(QThread):
     log_message = Signal(str)
 
     def __init__(self, photos, model, prompt, context, ollama_url,
-                 api_key=None, keywords_list=None, backend="openai",
+                 api_key=None, keywords_list=None, backend="ollama",
                  max_tokens=2048, describe_people=True, use_face_tags=True, timeout=180,
-                 image_size=1024, skip_existing=False):
+                 image_size=1024, skip_existing=False, prompt_skills=None,
+                 gps_lookup=False, has_manual_location=False):
         super().__init__()
         self.photos = photos
         self.model = model
@@ -366,6 +481,14 @@ class OllamaWorker(QThread):
         self.timeout = timeout
         self.image_size = image_size
         self.skip_existing = skip_existing
+        self.prompt_skills = prompt_skills or {}
+        # Location is resolved per photo at generation time (not once at load),
+        # so ticking the option or re-running Regenerate takes effect, and a
+        # folder spanning several places tags each photo with its own.
+        # A location typed into the context fields overrides all of that.
+        self.gps_lookup = gps_lookup
+        self.has_manual_location = has_manual_location
+        self._logged_no_location = False
         self._cancelled = False
         self.batch_total_time = 0.0
         self.batch_processed = 0
@@ -426,91 +549,64 @@ class OllamaWorker(QThread):
 
     def _build_prompt(self, face_tags=None, photo=None):
         """Construct the full prompt with context (per-photo, so it can weave in
-        any person names already tagged on that specific image)."""
-        parts = []
+        any person names already tagged on that specific image), using skill files."""
+        parts = [self.prompt.strip()]
 
-        if self.context.strip():
-            parts.append(f"Context for this photo: {self.context.strip()}")
+        # Batch context
+        ctx = self.context.strip()
+        if ctx and 'context' in self.prompt_skills:
+            parts.append(self.prompt_skills['context'].format(context=ctx))
 
-        if face_tags:
-            # Ensure face_tags is a list before joining
+        # Location
+        photo_location = ""
+        if photo and self.gps_lookup and not self.has_manual_location:
+            photo_location = resolve_photo_location(photo.filepath) or ""
+            if photo_location:
+                self.log_message.emit(f"Location for {photo.filename}: {photo_location}")
+                if 'location' in self.prompt_skills:
+                    parts.append(self.prompt_skills['location'].format(location=photo_location))
+            elif not self._logged_no_location:
+                self._logged_no_location = True
+                self.log_message.emit(f"Location lookup: no GPS or place name found on {photo.filename} (further misses won't be logged)")
+
+        if (ctx or photo_location) and 'location_ground_truth' in self.prompt_skills:
+            parts.append(self.prompt_skills['location_ground_truth'])
+
+        # People
+        if face_tags and 'face_tags' in self.prompt_skills:
             if not isinstance(face_tags, list):
                 face_tags = [str(face_tags)]
             names = ", ".join(face_tags)
-            parts.append(
-                "Note: This photo contains people tagged as: "
-                f"{names}. Use these names where appropriate in the "
-                "caption and include them in the keywords."
-            )
-
-        parts.append(self.prompt.strip())
+            parts.append(self.prompt_skills['face_tags'].format(names=names))
 
         persons = []
         if self.describe_people:
             persons = MetadataWriter.read_persons(photo.filepath) if photo else []
-            if persons:
-                parts.append(
-                    "People named in this photo: " + ", ".join(persons) + ". "
-                    "Use these exact names when referring to them in the title and "
-                    "caption, and include them in the keywords. Never invent names. "
-                    "If other people appear who aren't named, refer to them neutrally "
-                    "(e.g. 'another person') without inventing names."
-                )
-            else:
-                parts.append(
-                    "If people are visible in the photo, describe their positions, "
-                    "roles, and actions (e.g. 'bride and groom exchanging rings', "
-                    "'group of hikers on a trail', 'child playing in the sand'). "
-                    "Do not attempt to identify individuals by name. Include "
-                    "people-related terms in the keywords where relevant."
-                )
+            if persons and 'people_named' in self.prompt_skills:
+                parts.append(self.prompt_skills['people_named'].format(persons=", ".join(persons)))
+            elif not persons and 'people_generic' in self.prompt_skills:
+                parts.append(self.prompt_skills['people_generic'])
 
-        # Existing keyword/species tags already on the file (e.g. bird names
-        # from a specialist tagger like SuperPicky). Local generalist vision
-        # models can't ID species reliably, so feed the known tags in as facts.
+        # Keywords and vocabulary
         existing_tags = MetadataWriter.read_keywords(photo.filepath) if photo else []
         if persons:
             _pers = {p.lower() for p in persons}
             existing_tags = [t for t in existing_tags if t.lower() not in _pers]
-        if existing_tags:
-            parts.append(
-                "This photo is already tagged with these subjects: "
-                + ", ".join(existing_tags[:50]) + ". "
-                "These tags are accurate — use the specific ones (species, "
-                "place names, events) in the title and caption where they fit "
-                "what you see, and keep them in the keywords. Don't force in a "
-                "tag that clearly doesn't match the image."
-            )
+        if existing_tags and 'existing_keywords' in self.prompt_skills:
+            parts.append(self.prompt_skills['existing_keywords'].format(existing_keywords=", ".join(existing_tags[:50])))
 
-        if self.keywords_list:
+        if self.keywords_list and 'keyword_vocabulary' in self.prompt_skills:
             vocab = ", ".join(self.keywords_list[:200])
-            parts.append(
-                f"\nWhen generating keywords, prefer terms from this vocabulary "
-                f"where applicable: {vocab}"
-            )
+            parts.append(self.prompt_skills['keyword_vocabulary'].format(vocabulary=vocab))
 
-        # Anti-confabulation: small vision models will happily invent a
-        # plausible-but-wrong proper noun (a specific bridge/landmark/street
-        # name) to fill a gap, and pick a different one each frame. Only let
-        # them name specifics that are given above or legible in the image;
-        # otherwise stay generic. Better general-and-right than specific-and-wrong.
-        parts.append(
-            "Only state a specific proper name — of a person, place, landmark, "
-            "street, building, event, or species — when it is given in the "
-            "information above or clearly legible in the image (e.g. on a sign). "
-            "Never guess or invent one. When you are not certain of a specific "
-            "name, describe it generically instead (e.g. 'a bridge over a river', "
-            "'a historic building', 'a city street') rather than naming it. It is "
-            "better to be general and correct than specific and wrong."
-        )
+        # Final instructions
+        if 'anti_confabulation' in self.prompt_skills:
+            parts.append(self.prompt_skills['anti_confabulation'])
 
-        parts.append(
-            "\nRespond ONLY with valid JSON in this exact format, no other text:\n"
-            '{"title": "Short descriptive title", '
-            '"caption": "Detailed description of the image in 1-3 sentences", '
-            '"keywords": ["keyword1", "keyword2", "keyword3"]}'
-        )
-        return "\n\n".join(parts)
+        if 'output_format' in self.prompt_skills:
+            parts.append(self.prompt_skills['output_format'])
+
+        return "\n\n".join(p.strip() for p in parts if p.strip())
 
     def _clean_keywords(self, raw, extra_keywords=None):
         """Normalise the model's keywords.
@@ -806,17 +902,14 @@ class OllamaWorker(QThread):
                 # Call the AI model with current image
                 try:
                     photo_start = time.monotonic()
-                    full_prompt = self._build_prompt(photo)
-                    self.log_message.emit(f"Sending to {self.model}...")
 
                     # Read face tags if enabled
                     face_tags = []
                     if self.use_face_tags:
                         face_tags = MetadataWriter.read_face_tags(photo.filepath)
-                    full_prompt = self._build_prompt(photo=photo)
+                    full_prompt = self._build_prompt(photo=photo, face_tags=face_tags)
 
-                    full_prompt = self._build_prompt(face_tags=face_tags)
-
+                    self.log_message.emit(f"Sending to {self.model}...")
                     # Call the model, retrying once if it returns nothing usable.
                     meta = None
                     last_reason = "no response"
@@ -1173,7 +1266,10 @@ class MetadataWriter:
                 skip_existing=skip_existing, append_keywords=append_keywords)
 
         exiftool = MetadataWriter.find_exiftool() or "exiftool"
-        args = [exiftool]
+        # Mark the IPTC block as UTF-8 so accented keywords (e.g. "Château de
+        # Chenonceau") survive. Without this, exiftool falls back to Latin-1
+        # and readers like Lightroom show a "?" for the accented characters.
+        args = [exiftool, "-codedcharacterset=utf8"]
 
         if not backup:
             args.append("-overwrite_original")
@@ -1326,6 +1422,8 @@ class MetadataWriter:
 
                 for filepath, metadata in regular_items:
                     arg_lines = []
+                    # UTF-8 IPTC so accented keywords aren't mangled to "?".
+                    arg_lines.append("-codedcharacterset=utf8")
                     if not backup:
                         arg_lines.append("-overwrite_original")
 
@@ -1580,7 +1678,6 @@ class MetadataWriteWorker(QThread):
 
         return arg_lines
 
-
 # ─────────────────────────────────────────────────────────
 # Drop zone widget
 # ─────────────────────────────────────────────────────────
@@ -1592,14 +1689,29 @@ class DropZone(QFrame):
         super().__init__()
         self.setAcceptDrops(True)
         self.setMinimumHeight(120)
-        
+        self.setStyleSheet("""
+            DropZone {
+                border: 2px dashed #3a3a42;
+                border-radius: 12px;
+                background-color: #1e1e22;
+            }
+            DropZone:hover {
+                border-color: #e8a23a;
+                background-color: #222226;
+            }
+        """)
+
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(6)
 
         icon_label = QLabel("📷")
-        icon_label.setStyleSheet("font-size: 32px; background: transparent; border: none;")
+        icon_label.setStyleSheet(
+            "font-size: 22px; background-color: #232326; border: 1px solid #2f2f35;"
+            "border-radius: 10px; padding: 8px;"
+        )
         icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(icon_label)
+        layout.addWidget(icon_label, alignment=Qt.AlignCenter)
 
         text_label = QLabel("Drop photos here or click Browse")
         text_label.setObjectName("dropLabel")
@@ -1609,7 +1721,7 @@ class DropZone(QFrame):
 
         formats_label = QLabel("JPEG  ·  HEIC  ·  TIFF  ·  PNG  ·  RAW  ·  DNG  ·  CR2/CR3  ·  NEF  ·  ARW  ·  ORF  ·  RAF")
         formats_label.setStyleSheet(
-            "color: #555; font-size: 11px; background: transparent; border: none;"
+            "color: #56545a; font-size: 11px; background: transparent; border: none;"
         )
         formats_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(formats_label)
@@ -1652,6 +1764,13 @@ class DropZone(QFrame):
 # ─────────────────────────────────────────────────────────
 
 class StatusDot(QLabel):
+    COLOURS = {
+        "pending": "#5f5f66",
+        "processing": "#d1935e",
+        "done": "#7bc9a0",
+        "error": "#e2796a",
+    }
+
     def __init__(self, status="pending"):
         super().__init__()
         self.setFixedSize(12, 12)
@@ -1694,12 +1813,34 @@ class PhotoScribe(QMainWindow):
         self.settings = QSettings("PhotoScribe", "PhotoScribe")
         self.current_theme = "dark"
         self._detected_folder_context: Optional[FolderContext] = None
+        self._prompt_skills = self._load_prompt_skills()
         self._preview_cache = {}
 
         self._init_ui()
         self._load_settings()
         self._check_dependencies()
         QTimer.singleShot(500, self._refresh_models)
+
+    def _load_prompt_skills(self, skills_dir="prompt_skills"):
+        """Load prompt fragments from text files in the skills directory, searching recursively."""
+        skills = {}
+        skills_path = _get_resource_path(skills_dir)
+        if not os.path.isdir(skills_path):
+            self.log(f"Warning: Prompt skills directory not found: {skills_path}")
+            return {}
+
+        for root, _, files in os.walk(skills_path):
+            for filename in sorted(files):
+                if not filename.endswith(".txt"):
+                    continue
+                key = os.path.splitext(filename)[0]
+                key = re.sub(r'^\d+_', '', key) # For legacy compatibility
+                try:
+                    with open(os.path.join(root, filename), "r", encoding="utf-8") as f:
+                        skills[key] = f.read()
+                except Exception as e:
+                    self.log(f"Warning: Could not load prompt skill '{filename}': {e}")
+        return skills
 
     def _set_button_icon(self, button, text, icon_name, fallback_char):
         """Sets a button's icon from the system theme on Linux,
@@ -1755,21 +1896,24 @@ class PhotoScribe(QMainWindow):
         header = QHBoxLayout()
 
         title_col = QVBoxLayout()
-        title = QLabel("PhotoScribe")
+        title_col.setSpacing(2)
+        title = QLabel("PHOTOSCRIBE")
         title.setObjectName("titleLabel")
         title_col.addWidget(title)
         subtitle = QLabel(
-            f"AI-powered metadata generation using local models   ·   v{APP_VERSION}"
+            f"AI-powered metadata generation using local models  ·  v{APP_VERSION}"
         )
         subtitle.setObjectName("subtitleLabel")
         title_col.addWidget(subtitle)
         header.addLayout(title_col)
         header.addStretch()
 
-        # Ollama status
+        # Backend status, as a pill badge. The colour comes from the `state`
+        # property so the pill restyles without rebuilding its stylesheet.
         self.ollama_status = QLabel("● Checking Ollama...")
-        self.ollama_status.setStyleSheet("color: #e8a23a; font-size: 12px;")
-        header.addWidget(self.ollama_status)
+        self.ollama_status.setObjectName("statusPill")
+        self.ollama_status.setProperty("state", "wait")
+        header.addWidget(self.ollama_status, alignment=Qt.AlignVCenter)
 
         main_layout.addLayout(header)
 
@@ -1821,7 +1965,7 @@ class PhotoScribe(QMainWindow):
         self.photo_table.setAlternatingRowColors(True)
         self.photo_table.setStyleSheet(
             self.photo_table.styleSheet() +
-            "QTableWidget { alternate-background-color: #1c1c20; }"
+            "QTableWidget { alternate-background-color: #1f1f23; }"
         )
         self.photo_table.currentCellChanged.connect(self._on_photo_selected)
         self.photo_table.cellDoubleClicked.connect(self._on_photo_double_clicked)
@@ -1832,7 +1976,7 @@ class PhotoScribe(QMainWindow):
         # Folder name
         self.folder_name_label = QLabel("")
         self.folder_name_label.setStyleSheet(
-            "color: #e8a23a; font-size: 12px; font-weight: 600; border: none;"
+            "color: #d1935e; font-size: 12px; font-weight: 600; border: none;"
         )
         left_layout.addWidget(self.folder_name_label)
 
@@ -1867,8 +2011,8 @@ class PhotoScribe(QMainWindow):
         settings_inner = QWidget()
         settings_scroll.setWidget(settings_inner)
         settings_layout = QVBoxLayout(settings_inner)
-        settings_layout.setSpacing(0)
-        settings_layout.setContentsMargins(0, 0, 6, 0)
+        settings_layout.setSpacing(14)   # consistent gap between cards
+        settings_layout.setContentsMargins(0, 2, 6, 0)
 
         # Model selection
         self.model_group = CollapsibleGroupBox("Model")
@@ -1934,7 +2078,7 @@ class PhotoScribe(QMainWindow):
         dl_layout.setSpacing(4) 
         self.model_download_label = QLabel("")
         self.model_download_label.setStyleSheet(
-            "font-size: 14px; font-weight: 600; color: #e8a23a; border: none;"
+            "font-size: 14px; font-weight: 600; color: #d1935e; border: none;"
         )
         dl_layout.addWidget(self.model_download_label)
         self.model_download_progress = QProgressBar()
@@ -1948,12 +2092,15 @@ class PhotoScribe(QMainWindow):
         settings_layout.addWidget(self.model_download_widget)
 
         # Prompt
-        self.prompt_group = CollapsibleGroupBox("Prompt")
+        self.prompt_group = CollapsibleGroupBox("PROMPT")
         self.prompt_group.setChecked(True)
         prompt_layout = QVBoxLayout()
         self.prompt_group.setLayout(prompt_layout)
         self.prompt_edit = QTextEdit()
-        self.prompt_edit.setMaximumHeight(120)
+        # Tall enough that the default prompt reads in full without scrolling,
+        # capped so a long custom prompt can't crowd out the cards below it.
+        self.prompt_edit.setMinimumHeight(155)
+        self.prompt_edit.setMaximumHeight(220)
         self.prompt_edit.setPlaceholderText("Enter your prompt for the AI model...")
         self.prompt_edit.setText(
             "Analyse this photograph and generate metadata for it.\n\n"
@@ -1968,7 +2115,7 @@ class PhotoScribe(QMainWindow):
 
         preset_row = QHBoxLayout()
         preset_label = QLabel("Presets:")
-        preset_label.setStyleSheet("color: #888; font-size: 11px;")
+        preset_label.setStyleSheet("color: #7e7c78; font-size: 11px;")
         preset_row.addWidget(preset_label)
 
         self.prompt_preset_combo = QComboBox()
@@ -1990,7 +2137,7 @@ class PhotoScribe(QMainWindow):
 
         delete_preset_btn = QPushButton("Delete")
         delete_preset_btn.setFixedHeight(24)
-        delete_preset_btn.setStyleSheet("font-size: 11px; padding: 2px 10px; color: #c0392b;")
+        delete_preset_btn.setStyleSheet("font-size: 11px; padding: 2px 10px; color: #e2796a;")
         delete_preset_btn.clicked.connect(self._delete_prompt_preset)
         preset_row.addWidget(delete_preset_btn)
 
@@ -2002,22 +2149,22 @@ class PhotoScribe(QMainWindow):
         self._init_prompt_presets()
 
         # Batch context
-        context_group = CollapsibleGroupBox("Batch Context (applied to all photos)")
+        context_group = CollapsibleGroupBox("BATCH CONTEXT")
         context_layout = QGridLayout()
         context_group.setLayout(context_layout)
         context_layout.setSpacing(10)
         context_layout.setContentsMargins(12, 8, 12, 12)
 
-        # Folder context detection toggle
+        # Card header row: the descriptor that used to live in the group title
+        # (it reads as a hint, not a heading), then the folder-context toggle.
         folder_ctx_row = QHBoxLayout()
-        self.folder_context_check = QCheckBox("Use folder context")
-        self.folder_context_check.setChecked(True)
-        self.folder_context_check.toggled.connect(self._on_folder_context_toggled)
-        folder_ctx_row.addWidget(self.folder_context_check)
+        context_hint = QLabel("applied to all photos")
+        context_hint.setObjectName("cardHint")
+        folder_ctx_row.addWidget(context_hint)
 
         self.folder_context_label = QLabel("")
         self.folder_context_label.setStyleSheet(
-            "color: #e8a23a; font-size: 11px; font-style: italic;"
+            "color: #d1935e; font-size: 11px; font-style: italic;"
         )
         folder_ctx_row.addWidget(self.folder_context_label, 1)
 
@@ -2027,6 +2174,11 @@ class PhotoScribe(QMainWindow):
         self.clear_folder_ctx_btn.setVisible(False)
         self.clear_folder_ctx_btn.clicked.connect(self._clear_folder_context)
         folder_ctx_row.addWidget(self.clear_folder_ctx_btn)
+
+        self.folder_context_check = QCheckBox("Use folder context")
+        self.folder_context_check.setChecked(True)
+        self.folder_context_check.toggled.connect(self._on_folder_context_toggled)
+        folder_ctx_row.addWidget(self.folder_context_check)
 
         context_layout.addLayout(folder_ctx_row, 0, 0, 1, 2)
 
@@ -2041,7 +2193,7 @@ class PhotoScribe(QMainWindow):
         for row_idx, (label, key, placeholder) in enumerate(fields):
             row = row_idx + 1  # offset by 1 for the folder context row
             lbl = QLabel(label)
-            lbl.setStyleSheet("color: #a0a0a0; font-size: 12px;")
+            lbl.setStyleSheet("color: #8f8d89; font-size: 12px;")
             context_layout.addWidget(lbl, row, 0)
             edit = QLineEdit()
             edit.setPlaceholderText(placeholder)
@@ -2050,7 +2202,7 @@ class PhotoScribe(QMainWindow):
         settings_layout.addWidget(context_group)
 
         # Options
-        options_group = CollapsibleGroupBox("Options")
+        options_group = CollapsibleGroupBox("OPTIONS")
         options_layout = QVBoxLayout()
         options_group.setLayout(options_layout)
 
@@ -2111,13 +2263,17 @@ class PhotoScribe(QMainWindow):
         checks_grid.addWidget(self.exif_date_fallback_check, 3, 0)
 
         self.gps_lookup_check = QCheckBox(
-            "Look up location from GPS coordinates (requires internet)"
+            "Look up location from photo GPS / metadata"
         )
         self.gps_lookup_check.setChecked(False)
         self.gps_lookup_check.setToolTip(
-            "When enabled and photos have GPS EXIF data, looks up the\n"
-            "place name via OpenStreetMap Nominatim (free public API).\n"
-            "This makes an external network request. Off by default."
+            "Fills the Location field from each photo's own metadata.\n"
+            "Uses the place name your cataloguer (e.g. Lightroom) already\n"
+            "resolved — City, State, Country, from the file or its .xmp\n"
+            "sidecar — when present, with no network request. Only if no\n"
+            "such place name exists does it reverse-geocode the GPS\n"
+            "coordinates via OpenStreetMap Nominatim (a free public API,\n"
+            "which is an external request). Off by default."
         )
         self.gps_lookup_check.toggled.connect(self._on_gps_lookup_toggled)
         checks_grid.addWidget(self.gps_lookup_check, 3, 1)
@@ -2150,7 +2306,7 @@ class PhotoScribe(QMainWindow):
 
         sidecar_naming_row = QHBoxLayout()
         sidecar_naming_label = QLabel("DAM")
-        sidecar_naming_label.setStyleSheet("color: #a0a0a0; font-size: 12px;")
+        sidecar_naming_label.setStyleSheet("color: #8f8d89; font-size: 12px;")
         sidecar_naming_label.setFixedWidth(110)
         sidecar_naming_row.addWidget(sidecar_naming_label)
         self.sidecar_naming_combo = QComboBox()
@@ -2184,7 +2340,7 @@ class PhotoScribe(QMainWindow):
 
         response_length_row = QHBoxLayout()
         response_length_label = QLabel("Keyword density:")
-        response_length_label.setStyleSheet("color: #a0a0a0; font-size: 12px;")
+        response_length_label.setStyleSheet("color: #8f8d89; font-size: 12px;")
         response_length_label.setFixedWidth(110)
         response_length_row.addWidget(response_length_label)
         self.response_length_combo = QComboBox()
@@ -2209,7 +2365,7 @@ class PhotoScribe(QMainWindow):
             "these terms where applicable, giving you consistent keywording."
         )
         kw_desc.setWordWrap(True)
-        kw_desc.setStyleSheet("color: #888; font-size: 12px; margin-bottom: 8px;")
+        kw_desc.setStyleSheet("color: #7e7c78; font-size: 12px; margin-bottom: 8px;")
         kw_layout.addWidget(kw_desc)
 
         self.keywords_edit = QPlainTextEdit()
@@ -2242,7 +2398,7 @@ class PhotoScribe(QMainWindow):
             "contains a match, the corresponding preset/keywords are applied."
         )
         presets_desc.setWordWrap(True)
-        presets_desc.setStyleSheet("color: #888; font-size: 12px; margin-bottom: 8px;")
+        presets_desc.setStyleSheet("color: #7e7c78; font-size: 12px; margin-bottom: 8px;")
         presets_layout.addWidget(presets_desc)
 
         self.presets_table = QTableWidget()
@@ -2296,7 +2452,7 @@ class PhotoScribe(QMainWindow):
         self.results_table.setAlternatingRowColors(True)
         self.results_table.setStyleSheet(
             self.results_table.styleSheet() +
-            "QTableWidget { alternate-background-color: #1c1c20; }"
+            "QTableWidget { alternate-background-color: #1f1f23; }"
         )
         self.results_table.currentCellChanged.connect(self._on_result_selected)
         results_list_layout.addWidget(self.results_table)
@@ -2311,7 +2467,7 @@ class PhotoScribe(QMainWindow):
 
         self.results_pos_label = QLabel("0 / 0")
         self.results_pos_label.setAlignment(Qt.AlignCenter)
-        self.results_pos_label.setStyleSheet("color: #888; font-size: 11px;")
+        self.results_pos_label.setStyleSheet("color: #7e7c78; font-size: 11px;")
         results_nav_row.addWidget(self.results_pos_label)
 
         self.results_next_btn = QPushButton()
@@ -2333,14 +2489,14 @@ class PhotoScribe(QMainWindow):
         # Folder path in results
         self.detail_folder = QLabel("")
         self.detail_folder.setStyleSheet(
-            "font-size: 11px; color: #888; border: none; padding: 0;"
+            "font-size: 11px; color: #7e7c78; border: none; padding: 0;"
         )
         detail_layout.addWidget(self.detail_folder)
 
         # Filename header
         self.detail_filename = QLabel("Select a photo to view metadata")
         self.detail_filename.setStyleSheet(
-            "font-size: 14px; font-weight: 600; color: #e8a23a; "
+            "font-size: 14px; font-weight: 600; color: #d1935e; "
             "padding: 4px 0; border: none;"
         )
         detail_layout.addWidget(self.detail_filename)
@@ -2350,13 +2506,17 @@ class PhotoScribe(QMainWindow):
         self.detail_preview.setObjectName("detailPreview")
         self.detail_preview.setFixedHeight(380)
         self.detail_preview.setAlignment(Qt.AlignCenter)
+        self.detail_preview.setStyleSheet(
+            "background-color: #17171a; border: 1px solid #2a2a2f; "
+            "border-radius: 6px; color: #5f5f66; font-size: 12px;"
+        )
         self.detail_preview.setText("No preview")
         detail_layout.addWidget(self.detail_preview)
 
         # Title
         self.detail_title_label = QLabel("TITLE")
         self.detail_title_label.setStyleSheet(
-            "color: #888; font-size: 10px; font-weight: 600; "
+            "color: #7e7c78; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
         detail_layout.addWidget(self.detail_title_label)
@@ -2368,7 +2528,7 @@ class PhotoScribe(QMainWindow):
         # Caption
         self.detail_caption_label = QLabel("CAPTION")
         self.detail_caption_label.setStyleSheet(
-            "color: #888; font-size: 10px; font-weight: 600; "
+            "color: #7e7c78; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
         detail_layout.addWidget(self.detail_caption_label)
@@ -2382,7 +2542,7 @@ class PhotoScribe(QMainWindow):
         # Keywords
         kw_label = QLabel("KEYWORDS")
         kw_label.setStyleSheet(
-            "color: #888; font-size: 10px; font-weight: 600; "
+            "color: #7e7c78; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
         detail_layout.addWidget(kw_label)
@@ -2397,7 +2557,7 @@ class PhotoScribe(QMainWindow):
 
         # Keyword count
         self.kw_count_label = QLabel("")
-        self.kw_count_label.setStyleSheet("color: #555; font-size: 11px; border: none;")
+        self.kw_count_label.setStyleSheet("color: #5f5f66; font-size: 11px; border: none;")
         detail_layout.addWidget(self.kw_count_label)
 
         detail_layout.addStretch()
@@ -2419,7 +2579,7 @@ class PhotoScribe(QMainWindow):
         self.log_text.setReadOnly(True)
         self.log_text.setStyleSheet(
             "font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; "
-            "font-size: 11px; color: #888;"
+            "font-size: 11px; color: #7e7c78;"
         )
         log_layout.addWidget(self.log_text)
         self.tabs.addTab(log_tab, "Log")
@@ -2607,6 +2767,17 @@ class PhotoScribe(QMainWindow):
         self.current_theme = self.settings.value("theme", "dark")
         self._apply_theme()
         # load presets
+        # These used to reset on every launch, so a ticked location lookup
+        # silently turned itself off between sessions (#18 follow-up).
+        gps_lookup = self.settings.value("gps_lookup", "false")
+        # Restoring a ticked box must not re-open the one-time consent dialog.
+        self.gps_lookup_check.blockSignals(True)
+        self.gps_lookup_check.setChecked(gps_lookup == "true")
+        self.gps_lookup_check.blockSignals(False)
+        folder_context = self.settings.value("folder_context", "true")
+        self.folder_context_check.setChecked(folder_context == "true")
+        exif_date_fallback = self.settings.value("exif_date_fallback", "true")
+        self.exif_date_fallback_check.setChecked(exif_date_fallback == "true")
         self._load_folder_presets()
 
     def _save_settings(self):
@@ -2645,6 +2816,20 @@ class PhotoScribe(QMainWindow):
             "true" if self.sidecar_check.isChecked() else "false"
         )
         self.settings.setValue(
+            "gps_lookup",
+            "true" if self.gps_lookup_check.isChecked() else "false"
+        )
+        self.settings.setValue(
+            "folder_context",
+            "true" if self.folder_context_check.isChecked() else "false"
+        )
+        self.settings.setValue(
+            "exif_date_fallback",
+            "true" if self.exif_date_fallback_check.isChecked() else "false"
+        )
+        self.settings.setValue("sidecar_naming", str(self.sidecar_naming_combo.currentIndex()))
+        self.settings.setValue("response_length", str(self.response_length_combo.currentIndex()))
+        self.settings.setValue(
             "use_face_tags",
             "true" if self.face_tags_check.isChecked() else "false"
         )
@@ -2670,6 +2855,14 @@ class PhotoScribe(QMainWindow):
         event.accept()
 
     # ── Logging ──
+
+    def _set_status_pill(self, text, state):
+        """Update the header connection pill. `state` is on / off / wait —
+        the stylesheet picks the colour off the property, so re-polish it."""
+        self.ollama_status.setText(text)
+        self.ollama_status.setProperty("state", state)
+        self.ollama_status.style().unpolish(self.ollama_status)
+        self.ollama_status.style().polish(self.ollama_status)
 
     def log(self, msg):
         
@@ -2754,14 +2947,12 @@ class PhotoScribe(QMainWindow):
                     self.model_combo.setCurrentIndex(i)
                     break
 
-            self.ollama_status.setText(
-                f"● {backend_label} connected ({len(model_names)} models)"
-            )
-            self.ollama_status.setStyleSheet("color: #27ae60; font-size: 12px;")
+            n = len(model_names)
+            self._set_status_pill(
+                f"● {backend_label} · {n} model{'s' if n != 1 else ''}", "on")
             self.log(f"Connected to {backend_label} at {connected_url} ({len(model_names)} models)")
         else:
-            self.ollama_status.setText("● Not connected")
-            self.ollama_status.setStyleSheet("color: #c0392b; font-size: 12px;")
+            self._set_status_pill("● Not connected", "off")
             self.log(
                 f"Cannot connect at {url}\n"
                 "  Ollama default:   http://localhost:11434\n"
@@ -2873,19 +3064,19 @@ class PhotoScribe(QMainWindow):
             item = QTableWidgetItem(photo.filename)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             if photo.status == "error":
-                item.setForeground(QColor("#c0392b"))
+                item.setForeground(QColor("#e2796a"))
             self.photo_table.setItem(row, 1, item)
 
             # Status text
             status_item = QTableWidgetItem(photo.status.capitalize())
             status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
             status_colours = {
-                "pending": "#555",
-                "processing": "#e8a23a",
-                "done": "#27ae60",
-                "error": "#c0392b",
+                "pending": "#5f5f66",
+                "processing": "#d1935e",
+                "done": "#7bc9a0",
+                "error": "#e2796a",
             }
-            status_item.setForeground(QColor(status_colours.get(photo.status, "#555")))
+            status_item.setForeground(QColor(status_colours.get(photo.status, "#5f5f66")))
             self.photo_table.setItem(row, 2, status_item)
 
             # Title preview
@@ -2914,12 +3105,12 @@ class PhotoScribe(QMainWindow):
         item = QTableWidgetItem(photo.filename)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         if photo.status == "error":
-            item.setForeground(QColor("#c0392b"))
+            item.setForeground(QColor("#e2796a"))
         self.photo_table.setItem(row, 1, item)
         status_item = QTableWidgetItem(photo.status.capitalize())
         status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
-        status_colours = {"pending": "#555", "processing": "#e8a23a", "done": "#27ae60", "error": "#c0392b"}
-        status_item.setForeground(QColor(status_colours.get(photo.status, "#555")))
+        status_colours = {"pending": "#5f5f66", "processing": "#d1935e", "done": "#7bc9a0", "error": "#e2796a"}
+        status_item.setForeground(QColor(status_colours.get(photo.status, "#5f5f66")))
         self.photo_table.setItem(row, 2, status_item)
         title_text = photo.metadata.title if photo.metadata else ""
         title_item = QTableWidgetItem(title_text)
@@ -2990,10 +3181,13 @@ class PhotoScribe(QMainWindow):
             return
         # Show consent dialog
         reply = QMessageBox.question(
-            self, "GPS Location Lookup",
-            "This feature sends your photos' GPS coordinates to OpenStreetMap\n"
-            "(nominatim.openstreetmap.org) to look up place names.\n\n"
-            "No image data is sent — only latitude and longitude.\n\n"
+            self, "Location Lookup",
+            "This fills the Location field from each photo's own metadata.\n\n"
+            "When a photo already has a place name (City/State/Country, e.g.\n"
+            "from Lightroom), that is used directly with no network request.\n"
+            "Only when there is no such place name does it send the photo's\n"
+            "GPS coordinates to OpenStreetMap (nominatim.openstreetmap.org)\n"
+            "to look one up — latitude and longitude only, never image data.\n\n"
             "Do you want to enable this?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
@@ -3033,13 +3227,17 @@ class PhotoScribe(QMainWindow):
         self.log(f"Folder context detected: {ctx.location}, {ctx.date_str} (from '{ctx.raw_folder}')")
 
     def _detect_and_apply_folder_context(self, filepaths: list):
-        """Detect context from folder names and apply if found."""
-        if not self.folder_context_check.isChecked():
-            return
-        ctx = detect_batch_folder_context(filepaths)
-        if ctx:
-            self._apply_folder_context(ctx)
-            self._apply_folder_presets(ctx.raw_folder)
+        """On load, auto-fill the context fields. Each source is gated on its
+        OWN checkbox — folder-name detection, the EXIF-date fallback, and the
+        location lookup are independent. They must not require 'Use folder
+        context' to be enabled (issue #18: the GPS/location lookup silently did
+        nothing whenever folder context was off, because this whole method used
+        to bail out early)."""
+        if self.folder_context_check.isChecked():
+            ctx = detect_batch_folder_context(filepaths)
+            if ctx:
+                self._apply_folder_context(ctx)
+                self._apply_folder_presets(ctx.raw_folder)
 
         # EXIF date fallback
         if self.exif_date_fallback_check.isChecked():
@@ -3064,6 +3262,13 @@ class PhotoScribe(QMainWindow):
                             location_field.setText(place)
                             self.log(f"GPS location: {place}")
                             break
+        # NOTE: the location is deliberately NOT auto-filled into the shared
+        # Location field here. It is resolved per photo at generation time
+        # (see OllamaWorker._build_prompt), so that enabling the option after
+        # loading takes effect, Regenerate picks it up, and a folder spanning
+        # several places tags each photo with its own location rather than
+        # pinning the whole batch to whichever file happened to be scanned.
+        # Anything typed into the Location field still overrides everything.
 
     # ── Folder presets ──
 
@@ -3295,6 +3500,10 @@ class PhotoScribe(QMainWindow):
             timeout=self.timeout_spinbox.value(),
             image_size=image_size_map.get(self.image_size_combo.currentIndex(), 1024),
             skip_existing=self.skip_existing_check.isChecked(),
+            gps_lookup=self.gps_lookup_check.isChecked(),
+            prompt_skills=self._prompt_skills,
+            has_manual_location=bool(
+                self.context_fields["ctx_location"].text().strip()),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.result.connect(self._on_result)
@@ -3451,7 +3660,7 @@ class PhotoScribe(QMainWindow):
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
         plain_style = (
-            "color: #888; font-size: 10px; font-weight: 600; "
+            "color: #7e7c78; font-size: 10px; font-weight: 600; "
             "letter-spacing: 1px; margin-top: 4px; border: none;"
         )
         t_kept = getattr(photo.metadata, "title_kept", False)
@@ -4284,7 +4493,7 @@ class PhotoScribe(QMainWindow):
         self.model_download_widget.setVisible(True)
         self.model_download_label.setText(f"Downloading {model_name}...")
         self.model_download_label.setStyleSheet(
-            "font-size: 14px; font-weight: 600; color: #e8a23a; border: none;"
+            "font-size: 14px; font-weight: 600; color: #d1935e; border: none;"
         )
         self.model_download_progress.setMaximum(100)
         self.model_download_progress.setValue(0)
@@ -4360,14 +4569,14 @@ class PhotoScribe(QMainWindow):
             self.model_download_progress.setValue(100)
             self.model_download_label.setText(message)
             self.model_download_label.setStyleSheet(
-                "font-size: 14px; font-weight: 600; color: #27ae60; border: none;"
+                "font-size: 14px; font-weight: 600; color: #7bc9a0; border: none;"
             )
             QTimer.singleShot(1000, self._refresh_models)
             QTimer.singleShot(8000, lambda: self.model_download_widget.setVisible(False))
         else:
             self.model_download_label.setText(message)
             self.model_download_label.setStyleSheet(
-                "font-size: 14px; font-weight: 600; color: #c0392b; border: none;"
+                "font-size: 14px; font-weight: 600; color: #e2796a; border: none;"
             )
         # Clean up thread reference safely
         QTimer.singleShot(2000, lambda: setattr(self, '_pull_thread', None))
@@ -4380,6 +4589,13 @@ class PhotoScribe(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # The theme is set in PhotoScribe's constructor via _load_settings -> _apply_theme.
+    # To prevent a flicker of unstyled content, we apply the dark theme here at startup.
+    # The palettes and stylesheets are loaded below and attached to the PhotoScribe class.
+    app.setPalette(PhotoScribe._dark_palette)
+    app.setStyleSheet(PhotoScribe._dark_stylesheet)
+
     window = PhotoScribe()
     window.show()
     sys.exit(app.exec())

@@ -1,0 +1,1 @@
+This photo is already tagged with these subjects: {existing_keywords}. These tags are accurate — use the specific ones (species, place names, events) in the title and caption where they fit what you see, and keep them in the keywords. Don't force in a tag that clearly doesn't match the image.
