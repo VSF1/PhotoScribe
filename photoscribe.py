@@ -1813,10 +1813,10 @@ class PhotoScribe(QMainWindow):
         self.settings = QSettings("PhotoScribe", "PhotoScribe")
         self.current_theme = "dark"
         self._detected_folder_context: Optional[FolderContext] = None
-        self._prompt_skills = self._load_prompt_skills()
         self._preview_cache = {}
 
         self._init_ui()
+        self._prompt_skills = self._load_prompt_skills()
         self._load_settings()
         self._check_dependencies()
         QTimer.singleShot(500, self._refresh_models)
@@ -2015,7 +2015,7 @@ class PhotoScribe(QMainWindow):
         settings_layout.setContentsMargins(0, 2, 6, 0)
 
         # Model selection
-        self.model_group = CollapsibleGroupBox("Model")
+        self.model_group = CollapsibleGroupBox("MODEL")
         self.model_group.setChecked(True)  # Start expanded
         model_layout = QGridLayout()
         self.model_group.setLayout(model_layout)
@@ -2075,12 +2075,22 @@ class PhotoScribe(QMainWindow):
         self.model_download_widget = QWidget()
         dl_layout = QVBoxLayout(self.model_download_widget)
         dl_layout.setContentsMargins(0, 4, 0, 0)
-        dl_layout.setSpacing(4) 
+        dl_layout.setSpacing(4)
+
+        dl_header_layout = QHBoxLayout()
         self.model_download_label = QLabel("")
         self.model_download_label.setStyleSheet(
             "font-size: 14px; font-weight: 600; color: #d1935e; border: none;"
         )
-        dl_layout.addWidget(self.model_download_label)
+        dl_header_layout.addWidget(self.model_download_label, 1)
+
+        self.model_download_close_btn = QPushButton("✕")
+        self.model_download_close_btn.setFixedSize(20, 20)
+        self.model_download_close_btn.setStyleSheet("border: none; font-size: 14px; color: #888;")
+        self.model_download_close_btn.clicked.connect(self.model_download_widget.hide)
+        dl_header_layout.addWidget(self.model_download_close_btn)
+        dl_layout.addLayout(dl_header_layout)
+
         self.model_download_progress = QProgressBar()
         self.model_download_progress.setMinimum(0)
         self.model_download_progress.setMaximum(100)
@@ -2634,6 +2644,13 @@ class PhotoScribe(QMainWindow):
         action_row.addWidget(self.toggle_theme_btn)
 
         right_layout.addLayout(action_row)
+
+        # Progress bar (for loading, generating, writing)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(6)
+        right_layout.addWidget(self.progress_bar)
 
         # Status bar
         self.status_label = QLabel("Ready")
@@ -4490,12 +4507,14 @@ class PhotoScribe(QMainWindow):
         """Pull model via Ollama with progress."""
         model_name = command.replace("ollama pull ", "").strip()
         self.log(f"Pulling model: {model_name}...")
+
         self.model_download_widget.setVisible(True)
+        self.model_download_close_btn.setVisible(False)
+        self.model_download_progress.setVisible(True)
         self.model_download_label.setText(f"Downloading {model_name}...")
         self.model_download_label.setStyleSheet(
             "font-size: 14px; font-weight: 600; color: #d1935e; border: none;"
         )
-        self.model_download_progress.setMaximum(100)
         self.model_download_progress.setValue(0)
 
         class PullThread(QThread):
@@ -4563,21 +4582,21 @@ class PhotoScribe(QMainWindow):
 
     def _on_pull_finished(self, message: str):
         self.log(message)
+        self.model_download_close_btn.setVisible(True)
+        self.model_download_progress.setVisible(False)
+
         if "successfully" in message or "finished" in message:
-            # Set to 100% on success, as the final 'success' message has no numbers
-            self.model_download_progress.setMaximum(100)
-            self.model_download_progress.setValue(100)
             self.model_download_label.setText(message)
             self.model_download_label.setStyleSheet(
                 "font-size: 14px; font-weight: 600; color: #7bc9a0; border: none;"
             )
             QTimer.singleShot(1000, self._refresh_models)
-            QTimer.singleShot(8000, lambda: self.model_download_widget.setVisible(False))
         else:
             self.model_download_label.setText(message)
             self.model_download_label.setStyleSheet(
                 "font-size: 14px; font-weight: 600; color: #e2796a; border: none;"
             )
+
         # Clean up thread reference safely
         QTimer.singleShot(2000, lambda: setattr(self, '_pull_thread', None))
 

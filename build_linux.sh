@@ -32,7 +32,7 @@ echo -e "${BOLD}PhotoScribe — Linux App Builder${NC}"
 echo ""
 
 # ── Get version from CHANGELOG.md ──
-APP_VERSION=$(grep -m 1 '^## \[' CHANGELOG.md | sed -E 's/## \[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
+APP_VERSION=$(awk -F '[][]' '/^## \[/ {print $2; exit}' CHANGELOG.md)
 if [ -z "$APP_VERSION" ]; then
     echo -e "${RED}✗ Could not determine version from CHANGELOG.md.${NC}"
     echo "  Make sure there is a line like '## [1.2.3] — YYYY-MM-DD'"
@@ -166,16 +166,16 @@ EOF
         --iteration "1" \
         --prefix "/opt/photoscribe" \
         -p "dist/" \
-        -C "dist" \
+        -C "dist/photoscribe" \
         --depends "$EXIFTOOL_DEP" \
         --after-install "$POST_INSTALL_SCRIPT" \
         --license "MIT" \
         --vendor "Andy Hutchinson" \
-        --url "https://github.com/repomonkey/PhotoScribe" \
+        --url "https://github.com/VSF1/PhotoScribe" \
         --description "AI-powered photo metadata generator that runs entirely on your PC. No cloud, no subscription." \
-        "photoscribe/=/opt/photoscribe"
+        .
 
-    PACKAGE_FILE=$(find dist/ -name "photoscribe*.${PKG_TYPE}" -print -quit)
+    PACKAGE_FILE=$(find dist/ -name "photoscribe-${APP_VERSION}-*.${PKG_TYPE}" -print -quit)
     echo -e "${GREEN}✓${NC} Package created: $PACKAGE_FILE"
     echo ""
     echo -e "${BOLD}Build complete!${NC}"
