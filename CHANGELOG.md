@@ -2,6 +2,18 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.6.0.2] — 2026-07-12
+
+### Added
+- **New prompt presets.** Added several new built-in presets for different photography genres: Portrait, Studio Portrait, Lifestyle, Fashion, Boudoir, Sports, and Wedding.
+
+### Changed
+- **Model download UI.** The model download progress bar no longer disappears automatically. A close button has been added to allow users to dismiss the status message manually.
+
+### Fixed
+- **Application stability.** Fixed several crashes, including an initialization error on startup and an error when dragging and dropping photos.
+- **Linux packaging.** Corrected the installation path for RPM packages to prevent deeply nested directories. The build script has also been improved to correctly parse version numbers and report the final package path.
+
 ## [1.6.0.1] — 2026-07-12
 
 ### Added
