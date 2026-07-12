@@ -4007,6 +4007,47 @@ class PhotoScribe(QMainWindow):
             "features, vegetation, sky conditions, season, time of day, "
             "colours, and photographic style."
         ),
+        "Portrait": (
+            "Analyse this portrait photograph.\n\n"
+            "Title: A concise title describing the subject (5-10 words).\n"
+            "Caption: Describe the subject, their expression, pose, clothing, "
+            "the lighting style (e.g. natural light, studio), and the background (1-3 sentences).\n"
+            "Keywords: 15-20 keywords covering portrait style (e.g. headshot, environmental), "
+            "subject's description, mood, lighting, colour palette, and composition."
+        ),
+        "Portrait (Studio)": (
+            "Analyse this studio portrait photograph.\n\n"
+            "Title: A concise title describing the subject (5-10 words).\n"
+            "Caption: Describe the subject, their expression, pose, and clothing. Detail the studio lighting setup "
+            "(e.g., Rembrandt, butterfly, high-key, low-key) and the backdrop (e.g., seamless paper, textured, plain) "
+            "(1-3 sentences).\n"
+            "Keywords: 15-20 keywords covering studio portrait, headshot, fashion, beauty, lighting style, "
+            "backdrop color, mood, and composition."
+        ),
+        "Portrait (Lifestyle)": (
+            "Analyse this lifestyle photograph.\n\n"
+            "Title: An authentic title for this candid moment (5-10 words).\n"
+            "Caption: Describe the people, their activity, the environment, and the overall candid feeling of the scene "
+            "(1-3 sentences).\n"
+            "Keywords: 15-20 keywords covering lifestyle, candid, authentic, everyday life, the specific activity, "
+            "emotion, and setting."
+        ),
+        "Portrait (Fashion)": (
+            "Analyse this fashion photograph.\n\n"
+            "Title: A stylish title highlighting the clothing and look (5-10 words).\n"
+            "Caption: Describe the model, the clothing, designer (if known), the setting, and the overall mood and style "
+            "(e.g., street style, editorial) (1-3 sentences).\n"
+            "Keywords: 15-20 keywords covering fashion, style, clothing, designer, model, editorial, street style, "
+            "trend, and accessories."
+        ),
+        "Portrait (Boudoir)": (
+            "Analyse this boudoir photograph.\n\n"
+            "Title: An intimate and personal title for the portrait (5-10 words).\n"
+            "Caption: Describe the subject, their mood (e.g., sensual, confident), the lighting (e.g., soft, dramatic), "
+            "the setting, and pose (1-3 sentences).\n"
+            "Keywords: 15-20 keywords covering boudoir, intimate, sensual, portrait, lingerie, beauty, empowerment, "
+            "and mood."
+        ),
         "Event": (
             "Analyse this event photograph.\n\n"
             "Title: A descriptive title capturing the moment (5-10 words).\n"
@@ -4022,6 +4063,22 @@ class PhotoScribe(QMainWindow):
             "and presentation (1-3 sentences).\n"
             "Keywords: 15-20 keywords covering product type, features, "
             "materials, colours, style, and use case."
+        ),
+        "Sports": (
+            "Analyse this sports photograph.\n\n"
+            "Title: A dynamic title capturing the peak action (5-10 words).\n"
+            "Caption: Describe the key players, the action taking place, the sport, "
+            "and the intensity of the moment (1-3 sentences).\n"
+            "Keywords: 15-20 keywords covering the sport, team names, player names, "
+            "action (e.g. scoring, defending), equipment, venue, and emotion."
+        ),
+        "Wedding": (
+            "Analyse this wedding photograph.\n\n"
+            "Title: A romantic or descriptive title for the moment (5-10 words).\n"
+            "Caption: Describe the people (e.g. bride, groom, guests), their actions, emotions, "
+            "the setting (e.g. church, reception), and key details (e.g. dress, rings, flowers) (1-3 sentences).\n"
+            "Keywords: 15-20 keywords covering wedding, ceremony, reception, bride, groom, "
+            "love, celebration, and specific elements like wedding dress, rings, bouquet."
         ),
     }
 
