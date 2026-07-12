@@ -77,11 +77,11 @@ jobs:
       - name: Attach package to release
         if: startsWith(github.ref, 'refs/tags/')
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: gh release upload ${{ github.ref_name }} ${{ steps.package_paths.outputs.package_path }} --clobber
 
       - name: Attach signature to release
         if: startsWith(github.ref, 'refs/tags/') && matrix.package_type == 'tar' && steps.package_paths.outputs.signature_path
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: gh release upload ${{ github.ref_name }} ${{ steps.package_paths.outputs.signature_path }} --clobber
