@@ -4015,7 +4015,7 @@ class PhotoScribe(QMainWindow):
             "Keywords: 15-20 keywords covering portrait style (e.g. headshot, environmental), "
             "subject's description, mood, lighting, colour palette, and composition."
         ),
-        "Portrait (Studio)": (
+        "Studio Portrait": (
             "Analyse this studio portrait photograph.\n\n"
             "Title: A concise title describing the subject (5-10 words).\n"
             "Caption: Describe the subject, their expression, pose, and clothing. Detail the studio lighting setup "
@@ -4024,7 +4024,7 @@ class PhotoScribe(QMainWindow):
             "Keywords: 15-20 keywords covering studio portrait, headshot, fashion, beauty, lighting style, "
             "backdrop color, mood, and composition."
         ),
-        "Portrait (Lifestyle)": (
+        "Lifestyle": (
             "Analyse this lifestyle photograph.\n\n"
             "Title: An authentic title for this candid moment (5-10 words).\n"
             "Caption: Describe the people, their activity, the environment, and the overall candid feeling of the scene "
@@ -4032,7 +4032,7 @@ class PhotoScribe(QMainWindow):
             "Keywords: 15-20 keywords covering lifestyle, candid, authentic, everyday life, the specific activity, "
             "emotion, and setting."
         ),
-        "Portrait (Fashion)": (
+        "Fashion": (
             "Analyse this fashion photograph.\n\n"
             "Title: A stylish title highlighting the clothing and look (5-10 words).\n"
             "Caption: Describe the model, the clothing, designer (if known), the setting, and the overall mood and style "
@@ -4040,7 +4040,7 @@ class PhotoScribe(QMainWindow):
             "Keywords: 15-20 keywords covering fashion, style, clothing, designer, model, editorial, street style, "
             "trend, and accessories."
         ),
-        "Portrait (Boudoir)": (
+        "Boudoir": (
             "Analyse this boudoir photograph.\n\n"
             "Title: An intimate and personal title for the portrait (5-10 words).\n"
             "Caption: Describe the subject, their mood (e.g., sensual, confident), the lighting (e.g., soft, dramatic), "

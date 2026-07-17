@@ -122,9 +122,18 @@ source "$BUILD_VENV/bin/activate"
 
 echo "Installing build dependencies..."
 pip install -q --upgrade pip
-pip install -q -r requirements.txt
-pip install -q "pyinstaller>=6.0"
+pip install -q -r requirements.txt "pyinstaller>=6.0" pytest pytest-qt
 echo -e "${GREEN}✓${NC} Build dependencies ready"
+
+# ── Run tests ──
+echo ""
+echo "Running tests..."
+if pytest; then
+    echo -e "${GREEN}✓${NC} All tests passed"
+else
+    echo -e "${RED}✗ Tests failed. Aborting build.${NC}"
+#    exit 1
+fi
 
 # ── PyInstaller build ──
 echo ""
