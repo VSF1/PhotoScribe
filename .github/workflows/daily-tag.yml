@@ -63,7 +63,7 @@ jobs:
           git config --global user.email "actions@github.com"
 
       - name: Create and push tag
-        if: env.TAG_EXISTS == 'false' && env.HAS_CHANGES == 'true'
+        if: contains(env, 'TAG_EXISTS') && contains(env, 'HAS_CHANGES') && env.TAG_EXISTS == 'false' && env.HAS_CHANGES == 'true' 
         run: |
           echo "Creating tag: $TAG_NAME"
           git tag "$TAG_NAME"
