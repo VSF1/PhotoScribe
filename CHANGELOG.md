@@ -2,6 +2,15 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.6.2] — 2026-07-19
+
+### Added
+- **Keywords now work in darktable.** Keywords are additionally written to `lr:hierarchicalSubject`, which is where darktable looks — it ignores the `dc:subject` field PhotoScribe was using, so keywords never appeared there even though titles and captions did. Written on every path: embedded files, XMP sidecars, and batch writes. Reported by a viewer on YouTube.
+- **Keywords already applied in darktable are now read back**, so "append keywords" won't duplicate them and existing tags can inform the caption. Hierarchical tags are understood — `Places|Australia|Gerroa` is read as `Gerroa`.
+
+### Fixed
+- **Auto-tagger junk no longer leaks into your keywords and captions.** If a photo already carried tags, PhotoScribe told the model they were accurate and to keep them — reasonable for a few deliberate tags, but libraries that have been through an automatic tagger carry dozens of machine labels, and a beach in New South Wales was coming back tagged *Caribbean*, *Loch*, *Lake district* and *Rectangle*. How far those tags are trusted now depends on how many there are: a handful is treated as deliberate and used as before, so a species or place name from a specialist tagger still reaches the caption, while a large set is treated as unverified hints the model may draw on but must not copy wholesale. On a test photo carrying 45 automatic tags, the result went from 45 keywords including obvious nonsense to 13–15 accurate ones. Existing tags are still preserved in the file itself by "Append keywords to existing".
+
 ## [1.6.1] — 2026-07-10
 
 ### Fixed

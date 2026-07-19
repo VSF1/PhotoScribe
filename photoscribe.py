@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.2"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -458,6 +458,13 @@ class OllamaWorker(QThread):
     finished_all = Signal()
     log_message = Signal(str)
 
+    # At or under this many existing tags, treat them as deliberate (a
+    # specialist tagger, or the photographer's own) and trust them. Above it,
+    # the library has been through an auto-tagger and they're only hints.
+    _DELIBERATE_TAG_LIMIT = 8
+    # How many of those hints to show at all — no point pasting in forty.
+    _MAX_TAG_HINTS = 12
+
     def __init__(self, photos, model, prompt, context, ollama_url,
                  keywords_list=None, backend="ollama", max_tokens=2048,
                  describe_people=True, skip_existing=False,
@@ -609,19 +616,46 @@ class OllamaWorker(QThread):
 
         # Existing keyword/species tags already on the file (e.g. bird names
         # from a specialist tagger like SuperPicky). Local generalist vision
-        # models can't ID species reliably, so feed the known tags in as facts.
+        # models can't ID species reliably, so a known tag is worth offering.
+        #
+        # But offer it as a HINT, never as fact, and only a handful. A library
+        # that has been through an auto-tagger carries dozens of machine labels
+        # ("Rectangle", "Land lot", "Loch", "Caribbean" on a NSW beach). Calling
+        # those accurate and asking the model to keep them launders someone
+        # else's noise into the user's metadata — and into the caption. The
+        # originals are still preserved on the file by "Append keywords to
+        # existing", so nothing is lost by letting the model keyword afresh.
         existing_tags = MetadataWriter.read_keywords(photo.filepath) if photo else []
         if persons:
             _pers = {p.lower() for p in persons}
             existing_tags = [t for t in existing_tags if t.lower() not in _pers]
-        if existing_tags:
+        # How much to trust these depends on how many there are. A specialist
+        # tagger (or the photographer) applies a handful of deliberate, high
+        # value tags — "Superb Fairywren", "Werri Beach" — which the model
+        # genuinely cannot derive and should use. An auto-tagger applies dozens
+        # of generic machine labels, and trusting those launders them into the
+        # user's metadata. Count is the only reliable signal between the two.
+        if existing_tags and len(existing_tags) <= self._DELIBERATE_TAG_LIMIT:
             parts.append(
-                "This photo is already tagged with these subjects: "
-                + ", ".join(existing_tags[:50]) + ". "
-                "These tags are accurate — use the specific ones (species, "
-                "place names, events) in the title and caption where they fit "
-                "what you see, and keep them in the keywords. Don't force in a "
-                "tag that clearly doesn't match the image."
+                "This photo has already been tagged with: "
+                + ", ".join(existing_tags) + ". "
+                "These were applied deliberately and are likely accurate. Use "
+                "the specific ones (species, named places, events) in the title "
+                "and caption where they fit what you see — you could not "
+                "identify them on your own — and keep them in the keywords. "
+                "Ignore any that clearly don't match the image."
+            )
+        elif existing_tags:
+            parts.append(
+                "For reference, this photo carries a large number of existing "
+                "tags, which look automatically generated and may or may not be "
+                "accurate: "
+                + ", ".join(existing_tags[:self._MAX_TAG_HINTS]) + ". "
+                "Treat them as hints, not as facts. Use one only if it names "
+                "something specific that the photo plainly shows. Ignore "
+                "generic descriptive labels and anything that doesn't match "
+                "what you see. Do not copy this list into the keywords: choose "
+                "the keywords yourself, from what is actually in the photo."
             )
 
         if self.keywords_list:
@@ -1254,7 +1288,10 @@ class MetadataWriter:
         try:
             exiftool = MetadataWriter.find_exiftool() or "exiftool"
             targets = [str(filepath)] + MetadataWriter._sidecar_paths(filepath)
-            fields = ["-IPTC:Keywords", "-XMP-dc:Subject"]
+            # darktable keeps its tags in lr:HierarchicalSubject, so a file
+            # tagged there would otherwise look untagged to us.
+            fields = ["-IPTC:Keywords", "-XMP-dc:Subject",
+                      "-XMP-lr:HierarchicalSubject"]
             tags, seen = [], set()
             for tgt in targets:
                 r = _run([exiftool, "-j", "-sep", "\n"] + fields + [tgt],
@@ -1268,12 +1305,16 @@ class MetadataWriter:
                 if not data:
                     continue
                 entry = data[0]
-                for key in ("Keywords", "Subject"):
+                for key in ("Keywords", "Subject", "HierarchicalSubject"):
                     val = entry.get(key, "")
                     if isinstance(val, list):
                         val = "\n".join(str(x) for x in val)
                     for t in (x.strip() for x in str(val).split("\n") if x.strip()):
-                        if t.lower() not in seen:
+                        # A hierarchical tag is "Places|Australia|Gerroa" —
+                        # the leaf is the useful part for prompt context.
+                        if key == "HierarchicalSubject" and "|" in t:
+                            t = t.rsplit("|", 1)[-1].strip()
+                        if t and t.lower() not in seen:
                             seen.add(t.lower())
                             tags.append(t)
             return tags
@@ -1328,6 +1369,7 @@ class MetadataWriter:
             for kw in new_keywords:
                 args.append(f"-IPTC:Keywords+={kw}")
                 args.append(f"-XMP:Subject+={kw}")
+                args.append(f"-XMP-lr:HierarchicalSubject+={kw}")
         else:
             # Two-pass: clear all keywords first, then write new ones
             clear_args = [exiftool]
@@ -1336,6 +1378,7 @@ class MetadataWriter:
             clear_args.extend([
                 "-IPTC:Keywords=",
                 "-XMP:Subject=",
+                "-XMP-lr:HierarchicalSubject=",
                 filepath
             ])
             _run(clear_args, capture_output=True, text=True, timeout=15)
@@ -1344,6 +1387,7 @@ class MetadataWriter:
             for kw in kw_list:
                 args.append(f"-IPTC:Keywords+={kw}")
                 args.append(f"-XMP:Subject+={kw}")
+                args.append(f"-XMP-lr:HierarchicalSubject+={kw}")
 
         args.append(filepath)
 
@@ -1392,17 +1436,20 @@ class MetadataWriter:
             for kw in kw_list:
                 if kw.lower() not in existing_lower:
                     args.append(f"-XMP-dc:Subject+={kw}")
+                    args.append(f"-XMP-lr:HierarchicalSubject+={kw}")
         else:
             # Replace: clear existing keywords in a separate pass first — a
             # single "-Subject= ... +=" pass doesn't reliably clear a list tag
             # on an existing sidecar (matches the embedded path's two-pass).
             if xmp_path.exists():
                 _run(
-                    [exiftool, "-overwrite_original", "-XMP-dc:Subject=", str(xmp_path)],
+                    [exiftool, "-overwrite_original", "-XMP-dc:Subject=",
+                     "-XMP-lr:HierarchicalSubject=", str(xmp_path)],
                     capture_output=True, text=True, timeout=15
                 )
             for kw in kw_list:
                 args.append(f"-XMP-dc:Subject+={kw}")
+                args.append(f"-XMP-lr:HierarchicalSubject+={kw}")
 
         # Nothing left to write (everything skipped) — leave the sidecar as-is
         if len(args) <= 2:
@@ -1488,12 +1535,15 @@ class MetadataWriter:
                         for kw in new_keywords:
                             arg_lines.append(f"-IPTC:Keywords+={kw}")
                             arg_lines.append(f"-XMP:Subject+={kw}")
+                            arg_lines.append(f"-XMP-lr:HierarchicalSubject+={kw}")
                     else:
                         arg_lines.append("-IPTC:Keywords=")
                         arg_lines.append("-XMP:Subject=")
+                        arg_lines.append("-XMP-lr:HierarchicalSubject=")
                         for kw in metadata.keywords:
                             arg_lines.append(f"-IPTC:Keywords+={kw}")
                             arg_lines.append(f"-XMP:Subject+={kw}")
+                            arg_lines.append(f"-XMP-lr:HierarchicalSubject+={kw}")
 
                     arg_lines.append(filepath)
                     arg_lines.append("-execute")
