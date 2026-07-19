@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -556,8 +556,18 @@ class OllamaWorker(QThread):
             if photo_location:
                 self.log_message.emit(
                     f"Location for {photo.filename}: {photo_location}")
+                # Phrase this as an instruction, not a permission. Stating only
+                # "taken at X" (or worse, only forbidding other places) leaves
+                # the place name in the keywords and out of the prose — the
+                # same trap the Lightroom plugin hit. Tell it to use the name.
                 parts.append(
-                    f"Location: this photo was taken at {photo_location}.")
+                    f"Location: this photo was taken at {photo_location}. This "
+                    "is accurate information that has been provided to you, not "
+                    "a guess — name this place in the title AND in the caption, "
+                    "and include it in the keywords. Use the recognisable place "
+                    "name (the town, suburb, or locality) rather than a street "
+                    "address or house number."
+                )
             elif not self._logged_no_location:
                 self._logged_no_location = True
                 self.log_message.emit(
@@ -820,6 +830,9 @@ class OllamaWorker(QThread):
                 "temperature": 0.3,
                 "num_predict": self.max_tokens,
             },
+            # Ollama's switch for the same problem the OpenAI path solves with
+            # reasoning_effort: stop the model burning num_predict on a
+            # reasoning pass before it writes any JSON.
             "think": False,
         }
         url = f"{self.ollama_url}/api/chat"
@@ -858,6 +871,13 @@ class OllamaWorker(QThread):
             "max_tokens": self.max_tokens,
             "stream": False,
             "think": False,
+            # Turn off "thinking". Reasoning models (Gemma 4 et al) spend their
+            # whole token budget on a reasoning pass before emitting any answer
+            # — measured at 840-1200 reasoning tokens for one photo, which
+            # overruns max_tokens and truncates the JSON mid-write. This flag
+            # takes a request from ~1400 completion tokens to ~140. `think` is
+            # the Ollama spelling and is ignored here; this is the OpenAI one.
+            "reasoning_effort": "none",
             # Structured output — LM Studio grammar-constrains the model to
             # this schema, so it can't return a prose/bulleted plan. (LM Studio
             # wants json_schema, not the OpenAI json_object type.)
@@ -868,14 +888,27 @@ class OllamaWorker(QThread):
         }
         url = f"{self.ollama_url}/v1/chat/completions"
         resp = requests.post(url, json=payload, timeout=180)
-        # Fall back if the backend doesn't support json_schema response_format
-        if resp.status_code == 400 and "response_format" in resp.text:
-            payload.pop("response_format", None)
-            resp = requests.post(url, json=payload, timeout=180)
+        # Drop optional params one at a time if the backend rejects them, so an
+        # older or stricter server still works rather than failing outright.
+        for param in ("reasoning_effort", "response_format"):
+            if resp.status_code == 400 and param in resp.text and param in payload:
+                payload.pop(param, None)
+                resp = requests.post(url, json=payload, timeout=180)
         resp.raise_for_status()
-        msg = resp.json()["choices"][0]["message"]
-        # Gemma 4 thinking models may return content in reasoning_content
-        return msg.get("content") or msg.get("reasoning_content", "")
+        body = resp.json()
+        choice = (body.get("choices") or [{}])[0]
+        msg = choice.get("message", {}) or {}
+        content = (msg.get("content") or "").strip()
+        # A reasoning model that ran out of budget mid-thought leaves `content`
+        # empty and its scratchpad in `reasoning_content`. Returning that prose
+        # gets reported as "not valid JSON", which sends people off tuning the
+        # model when the real cause is the token ceiling — so say so plainly.
+        if not content and choice.get("finish_reason") == "length":
+            raise RuntimeError(
+                "ran out of tokens before finishing — raise Response length "
+                "in Settings (the model spent the budget on reasoning)"
+            )
+        return content or msg.get("reasoning_content", "")
 
     def run(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -937,14 +970,26 @@ class OllamaWorker(QThread):
                     # Call the model, retrying once if it returns nothing usable.
                     meta = None
                     last_reason = "no response"
+                    base_max_tokens = self.max_tokens
                     for attempt in range(2):
                         if self._cancelled:
                             break
                         if attempt > 0:
+                            # Retrying with the identical budget just reproduces
+                            # a truncated answer, so give the retry more room.
+                            self.max_tokens = base_max_tokens * 2
                             self.log_message.emit(
-                                "Empty/unparseable response — retrying once..."
+                                "Empty/unparseable response — retrying with a "
+                                f"larger token budget ({self.max_tokens})..."
                             )
-                        response_text = call_fn(img_b64, full_prompt)
+                        try:
+                            response_text = call_fn(img_b64, full_prompt)
+                        except RuntimeError as e:
+                            last_reason = str(e)
+                            self.log_message.emit(f"Model call failed: {e}")
+                            continue
+                        finally:
+                            self.max_tokens = base_max_tokens
                         self.log_message.emit(
                             f"Response received ({len(response_text)} chars)"
                         )
@@ -1318,6 +1363,16 @@ class MetadataWriter:
         """
         exiftool = MetadataWriter.find_exiftool() or "exiftool"
         xmp_path = raw_path.with_suffix(".xmp") if adobe_naming else Path(str(raw_path) + ".xmp")
+
+        # If a sidecar already exists under the OTHER naming convention, write
+        # to that one instead of creating a second file. Two sidecars for one
+        # RAW means the cataloguer keeps reading its own and never sees what we
+        # wrote — and any rating/label living in it gets stranded.
+        if not xmp_path.exists():
+            other = (Path(str(raw_path) + ".xmp") if adobe_naming
+                     else raw_path.with_suffix(".xmp"))
+            if other.exists():
+                xmp_path = other
 
         existing_title, existing_caption, existing_keywords = "", "", []
         if (skip_existing or append_keywords) and xmp_path.exists():
@@ -3632,7 +3687,10 @@ class PhotoScribe(QMainWindow):
         self.progress_bar.setMaximum(len(self.photos))
         self.progress_bar.setValue(0)
 
-        max_tokens_map = {0: 1024, 1: 2048, 2: 4096}
+        # Headroom matters more than it looks: a reasoning model that ignores
+        # the "no thinking" flag can spend 1000+ tokens before writing any
+        # JSON, and a short ceiling truncates the answer mid-object.
+        max_tokens_map = {0: 2048, 1: 4096, 2: 8192}
         self.worker = OllamaWorker(
             photos=self.photos,
             model=self.model_combo.currentText(),
