@@ -228,6 +228,64 @@ class TestStructuredOutput:
         assert seen[1] == "json"                       # fallback: plain json mode
 
 
+# ── Reasoning models exhausting the token budget ──────────────────
+
+class TestReasoningBudget:
+    """v1.6.1: reasoning models (Gemma 4) spend the whole max_tokens budget on
+    a thinking pass before writing any JSON, so the answer gets truncated and
+    the leftover scratchpad was reported as 'not valid JSON'."""
+
+    def _worker(self, **kw):
+        kw.setdefault("backend", "openai")
+        return OllamaWorker(photos=[], model="m", prompt="p", context="",
+                            ollama_url="http://x", keywords_list=[], **kw)
+
+    def test_reasoning_disabled_in_request(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(photoscribe.requests, "post",
+                            lambda url, json=None, timeout=None: (seen.append(json), _Resp())[1])
+        self._worker()._call_openai("img", "p")
+        assert seen[0].get("reasoning_effort") == "none"
+
+    def test_drops_reasoning_effort_if_rejected(self, monkeypatch):
+        seen = []
+
+        def post(url, json=None, timeout=None):
+            seen.append(dict(json))
+            if "reasoning_effort" in json:
+                return _Resp(status=400, text="unknown parameter reasoning_effort")
+            return _Resp()
+        monkeypatch.setattr(photoscribe.requests, "post", post)
+        self._worker()._call_openai("img", "p")
+        assert "reasoning_effort" in seen[0]
+        assert "reasoning_effort" not in seen[1]
+        # response_format must survive the reasoning_effort fallback
+        assert "response_format" in seen[1]
+
+    def test_truncated_reasoning_reports_token_limit(self, monkeypatch):
+        # content empty + finish_reason "length" = ran out of budget mid-think.
+        payload = {"choices": [{"finish_reason": "length",
+                                "message": {"content": "",
+                                            "reasoning_content": "*  Let me think..."}}]}
+        monkeypatch.setattr(photoscribe.requests, "post",
+                            lambda url, json=None, timeout=None: _Resp(payload=payload))
+        with pytest.raises(RuntimeError) as e:
+            self._worker()._call_openai("img", "p")
+        msg = str(e.value).lower()
+        assert "ran out of tokens" in msg
+        assert "response length" in msg          # tells the user what to change
+
+    def test_reasoning_content_still_used_when_not_truncated(self, monkeypatch):
+        # Not truncated, so the scratchpad is the only thing on offer — the
+        # tolerant parser may still find JSON in it.
+        payload = {"choices": [{"finish_reason": "stop",
+                                "message": {"content": "",
+                                            "reasoning_content": '{"title":"t"}'}}]}
+        monkeypatch.setattr(photoscribe.requests, "post",
+                            lambda url, json=None, timeout=None: _Resp(payload=payload))
+        assert self._worker()._call_openai("img", "p") == '{"title":"t"}'
+
+
 # ── read_existing_metadata (stubbed _run) ─────────────────────────
 
 class TestReadExistingMetadata:
@@ -295,6 +353,55 @@ class TestBuildPrompt:
         prompt = w._build_prompt(photo)
         assert "Superb Fairywren" in prompt
 
+    def test_few_tags_are_trusted(self, monkeypatch):
+        # v1.6.2: a handful of tags reads as deliberate (specialist tagger or
+        # the photographer) and should still be trusted — this is the feature
+        # from issue #9 that lets a caption say "Superb Fairywren".
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords",
+                            lambda f: ["Superb Fairywren", "Werri Beach"])
+        w = make_worker(describe_people=False)
+        prompt = w._build_prompt(PhotoItem(filepath="x.jpg", filename="x.jpg"))
+        assert "applied deliberately" in prompt
+        assert "Superb Fairywren" in prompt
+        assert "keep them in the keywords" in prompt
+
+    def test_many_tags_are_downgraded_to_hints(self, monkeypatch):
+        # An auto-tagged library carries dozens of machine labels; asserting
+        # they're accurate launders them into the user's metadata.
+        tags = [f"tag{i}" for i in range(40)]
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: tags)
+        w = make_worker(describe_people=False)
+        prompt = w._build_prompt(PhotoItem(filepath="x.jpg", filename="x.jpg"))
+        assert "automatically generated" in prompt
+        assert "Do not copy this list into the keywords" in prompt
+        assert "applied deliberately" not in prompt
+
+    def test_hint_list_is_capped(self, monkeypatch):
+        tags = [f"tag{i}" for i in range(40)]
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: tags)
+        w = make_worker(describe_people=False)
+        prompt = w._build_prompt(PhotoItem(filepath="x.jpg", filename="x.jpg"))
+        assert "tag0" in prompt
+        # only _MAX_TAG_HINTS of them, so the tail must not appear
+        assert "tag39" not in prompt
+        assert "tag12" not in prompt
+
+    def test_boundary_between_trusted_and_hinted(self, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        limit = OllamaWorker._DELIBERATE_TAG_LIMIT
+        monkeypatch.setattr(MetadataWriter, "read_keywords",
+                            lambda f: [f"t{i}" for i in range(limit)])
+        w = make_worker(describe_people=False)
+        assert "applied deliberately" in w._build_prompt(
+            PhotoItem(filepath="x.jpg", filename="x.jpg"))
+        monkeypatch.setattr(MetadataWriter, "read_keywords",
+                            lambda f: [f"t{i}" for i in range(limit + 1)])
+        assert "automatically generated" in w._build_prompt(
+            PhotoItem(filepath="x.jpg", filename="x.jpg"))
+
     def test_tags_deduped_against_persons(self, monkeypatch):
         monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: ["Andy"])
         monkeypatch.setattr(MetadataWriter, "read_keywords",
@@ -303,7 +410,7 @@ class TestBuildPrompt:
         photo = PhotoItem(filepath="x.jpg", filename="x.jpg")
         prompt = w._build_prompt(photo)
         # "Andy" appears in the people line, not repeated in the subjects line
-        assert "already tagged with these subjects: beach" in prompt
+        assert "already been tagged with: beach" in prompt
 
     def test_location_asserted_as_ground_truth(self, monkeypatch):
         # v1.5.4: when a Location is supplied, the prompt must forbid the model
@@ -445,6 +552,138 @@ class TestBatchWriteWorker:
             backup=False, append_keywords=True, skip_existing=True).run()
         title, _, _ = MetadataWriter.read_existing_metadata(str(f))
         assert title == "Keep Me"
+
+
+# ── lr:HierarchicalSubject for darktable (v1.6.2) ─────────────────
+
+@needs_exiftool
+class TestHierarchicalSubject:
+    """darktable reads keywords from lr:hierarchicalSubject and ignores
+    dc:subject, so keywords written only to dc:subject never showed up."""
+
+    def _hs(self, path):
+        exiftool = MetadataWriter.find_exiftool()
+        r = photoscribe._run([exiftool, "-s3", "-XMP-lr:HierarchicalSubject", str(path)],
+                             capture_output=True, text=True)
+        return [s.strip() for s in r.stdout.strip().split(",") if s.strip()]
+
+    def test_embedded_replace_writes_hierarchical(self, tmp_path):
+        img = make_jpeg(tmp_path / "a.jpg")
+        MetadataWriter.write_metadata(
+            str(img), PhotoMetadata(title="T", caption="C",
+                                    keywords=["Gerroa", "beach"]), backup=False)
+        assert self._hs(img) == ["Gerroa", "beach"]
+
+    def test_embedded_append_writes_hierarchical(self, tmp_path):
+        img = make_jpeg(tmp_path / "b.jpg")
+        MetadataWriter.write_metadata(
+            str(img), PhotoMetadata(title="T", caption="C", keywords=["x"]),
+            backup=False, append_keywords=True)
+        assert "x" in self._hs(img)
+
+    def test_sidecar_writes_hierarchical(self, tmp_path):
+        raw = tmp_path / "c.cr2"
+        raw.write_bytes(b"\x00" * 32)
+        MetadataWriter._write_sidecar(
+            raw, PhotoMetadata(title="T", caption="C", keywords=["Gerroa", "surf"]),
+            adobe_naming=True)
+        assert self._hs(tmp_path / "c.xmp") == ["Gerroa", "surf"]
+
+    def test_batch_writes_hierarchical(self, tmp_path):
+        img = make_jpeg(tmp_path / "d.jpg")
+        n, errs = MetadataWriter.write_metadata_batch(
+            [(str(img), PhotoMetadata(title="T", caption="C", keywords=["k1", "k2"]))],
+            backup=False)
+        assert n == 1 and not errs
+        assert self._hs(img) == ["k1", "k2"]
+
+    def test_replace_clears_old_hierarchical(self, tmp_path):
+        img = make_jpeg(tmp_path / "e.jpg")
+        exiftool = MetadataWriter.find_exiftool()
+        photoscribe._run([exiftool, "-overwrite_original",
+                          "-XMP-lr:HierarchicalSubject=stale", str(img)],
+                         capture_output=True, text=True)
+        MetadataWriter.write_metadata(
+            str(img), PhotoMetadata(title="T", caption="C", keywords=["fresh"]),
+            backup=False)
+        assert self._hs(img) == ["fresh"], "old hierarchical keyword survived replace"
+
+    def test_reads_darktable_hierarchical_tags(self, tmp_path):
+        # darktable writes a hierarchy; the leaf is what belongs in the prompt.
+        img = make_jpeg(tmp_path / "f.jpg")
+        exiftool = MetadataWriter.find_exiftool()
+        photoscribe._run([exiftool, "-overwrite_original",
+                          "-XMP-lr:HierarchicalSubject=Places|Australia|Gerroa",
+                          "-XMP-lr:HierarchicalSubject=wildlife", str(img)],
+                         capture_output=True, text=True)
+        tags = MetadataWriter.read_keywords(str(img))
+        assert "Gerroa" in tags and "wildlife" in tags
+        assert not any("|" in t for t in tags)
+
+
+# ── Sidecars must not be duplicated or strip ratings (v1.6.1) ─────
+
+@needs_exiftool
+class TestSidecarRatingsAndNaming:
+    """Reported by a viewer: star ratings vanished after reading metadata back
+    into Lightroom. PhotoScribe never strips a rating — but it could write a
+    SECOND sidecar under the other naming convention, stranding the rated one."""
+
+    def _rating(self, path):
+        exiftool = MetadataWriter.find_exiftool()
+        r = photoscribe._run([exiftool, "-s3", "-XMP:Rating", "-XMP:Label", str(path)],
+                             capture_output=True, text=True)
+        return r.stdout.strip().replace("\n", "/")
+
+    def _seed_sidecar(self, path, rating=5):
+        exiftool = MetadataWriter.find_exiftool()
+        photoscribe._run([exiftool, "-overwrite_original", f"-XMP:Rating={rating}",
+                          "-XMP:Label=Blue", str(path)], capture_output=True, text=True)
+
+    def test_existing_sidecar_keeps_its_rating(self, tmp_path):
+        raw = tmp_path / "a.cr2"
+        raw.write_bytes(b"\x00" * 32)
+        side = tmp_path / "a.xmp"
+        self._seed_sidecar(side)
+        MetadataWriter._write_sidecar(
+            raw, PhotoMetadata(title="T", caption="C", keywords=["x"]),
+            adobe_naming=True)
+        assert self._rating(side) == "5/Blue"
+
+    def test_no_duplicate_sidecar_across_naming_conventions(self, tmp_path):
+        # Lightroom wrote a.xmp; the DAM setting says a.cr2.xmp. We must reuse
+        # Lightroom's rather than orphan it behind a second file.
+        raw = tmp_path / "a.cr2"
+        raw.write_bytes(b"\x00" * 32)
+        lrc_side = tmp_path / "a.xmp"
+        self._seed_sidecar(lrc_side)
+        MetadataWriter._write_sidecar(
+            raw, PhotoMetadata(title="NewTitle", caption="C", keywords=["x"]),
+            adobe_naming=False)
+        sidecars = sorted(p.name for p in tmp_path.glob("*.xmp"))
+        assert sidecars == ["a.xmp"], f"duplicate sidecar created: {sidecars}"
+        assert self._rating(lrc_side) == "5/Blue"
+        title, _, _ = MetadataWriter.read_existing_metadata(str(lrc_side))
+        assert title == "NewTitle"
+
+    def test_reverse_naming_direction(self, tmp_path):
+        raw = tmp_path / "b.cr2"
+        raw.write_bytes(b"\x00" * 32)
+        side = tmp_path / "b.cr2.xmp"
+        self._seed_sidecar(side, rating=2)
+        MetadataWriter._write_sidecar(
+            raw, PhotoMetadata(title="T2", caption="C", keywords=["x"]),
+            adobe_naming=True)
+        assert sorted(p.name for p in tmp_path.glob("*.xmp")) == ["b.cr2.xmp"]
+        assert self._rating(side).startswith("2")
+
+    def test_embedded_write_keeps_rating(self, tmp_path):
+        img = make_jpeg(tmp_path / "r.jpg")
+        self._seed_sidecar(img, rating=4)
+        MetadataWriter.write_metadata(
+            str(img), PhotoMetadata(title="T", caption="C", keywords=["a"]),
+            backup=False)
+        assert self._rating(img) == "4/Blue"
 
 
 # ── UTF-8 accented keywords (v1.5.4) ──────────────────────────────

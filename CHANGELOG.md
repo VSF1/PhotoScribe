@@ -2,6 +2,27 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.6.2] — 2026-07-19
+
+### Added
+- **Keywords now work in darktable.** Keywords are additionally written to `lr:hierarchicalSubject`, which is where darktable looks — it ignores the `dc:subject` field PhotoScribe was using, so keywords never appeared there even though titles and captions did. Written on every path: embedded files, XMP sidecars, and batch writes. Reported by a viewer on YouTube.
+- **Keywords already applied in darktable are now read back**, so "append keywords" won't duplicate them and existing tags can inform the caption. Hierarchical tags are understood — `Places|Australia|Gerroa` is read as `Gerroa`.
+
+### Fixed
+- **Auto-tagger junk no longer leaks into your keywords and captions.** If a photo already carried tags, PhotoScribe told the model they were accurate and to keep them — reasonable for a few deliberate tags, but libraries that have been through an automatic tagger carry dozens of machine labels, and a beach in New South Wales was coming back tagged *Caribbean*, *Loch*, *Lake district* and *Rectangle*. How far those tags are trusted now depends on how many there are: a handful is treated as deliberate and used as before, so a species or place name from a specialist tagger still reaches the caption, while a large set is treated as unverified hints the model may draw on but must not copy wholesale. On a test photo carrying 45 automatic tags, the result went from 45 keywords including obvious nonsense to 13–15 accurate ones. Existing tags are still preserved in the file itself by "Append keywords to existing".
+
+## [1.6.1] — 2026-07-10
+
+### Fixed
+- **"Couldn't read metadata" failures with reasoning models are fixed, and generation is much faster.** Newer models (Gemma 4 and similar) run a hidden "thinking" pass before answering. That reasoning was consuming the entire response budget — measured at 840–1200 tokens for a single photo — so the model was cut off before it finished writing its JSON, and the leftover scratchpad got reported as an invalid response. Reasoning is now switched off explicitly, which took a test photo from failing twice in a row to succeeding first time, and cut a request from roughly 1,400 tokens to 140.
+- **A photo that fails is now retried with a bigger budget** rather than the same one that just ran out, and if a response really is cut short the log says so plainly instead of blaming the JSON.
+- **Response length options raised** to 2048 / 4096 / 8192 tokens, so models that ignore the no-thinking flag still have room to finish.
+- **The place name reliably reaches the title and caption again**, instead of only the keywords. The location was being framed defensively ("don't name a different place") rather than as an instruction, which a model without a reasoning pass tends not to act on — in testing the place name appeared in only 1 of 3 captions, and now appears in every one. It also now prefers the recognisable town or locality over a street address, so a Sublocation like "Geering Street 41" no longer ends up in the title.
+- **No more duplicate XMP sidecars.** If a sidecar already existed under the other naming convention (`photo.xmp` vs `photo.cr2.xmp`), PhotoScribe wrote a second one — so Lightroom kept reading its own file, never saw the new metadata, and any star rating or colour label in it was stranded. It now writes to whichever sidecar already exists.
+
+### Note on star ratings
+PhotoScribe does not remove star ratings or colour labels — verified for embedded files and for existing sidecars. If ratings disappear after **Read Metadata from File**, it is because Lightroom replaces the catalogue's values with the file's, and the rating was only ever in the catalogue. Use **Metadata → Save Metadata to File** *before* running PhotoScribe and the rating will be in the sidecar, where it is then preserved.
+
 ## [1.6.0.2] — 2026-07-12
 
 ### Added
