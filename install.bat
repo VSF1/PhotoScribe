@@ -93,6 +93,15 @@ if errorlevel 1 (
     echo.
 ) else (
     echo  [OK] Ollama found
+    REM Check if it's running
+    curl -s http://localhost:11434/api/tags >nul 2>&1
+    if errorlevel 1 (
+        echo  [WARNING] Ollama is installed but not running.
+        echo  Start it from the Start Menu or by running 'ollama serve'
+        echo  in a new command prompt.
+    ) else (
+        echo  [OK] Ollama is running
+    )
 )
 
 REM ── Check ExifTool ──

@@ -36,7 +36,7 @@ echo ""
 
 # ── Find a compatible Python (3.10-3.13; PyInstaller doesn't support 3.14 yet) ──
 PYTHON=""
-for v in 3.14 3.13 3.12 3.11 3.10; do
+for v in 3.13 3.12 3.11 3.10; do
     if command -v "python$v" &>/dev/null; then
         PYTHON="python$v"
         break
@@ -46,7 +46,7 @@ if [ -z "$PYTHON" ]; then
     if command -v python3 &>/dev/null; then
         VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
         MINOR=$(echo "$VER" | cut -d. -f2)
-        if [ "$MINOR" -ge 10 ] && [ "$MINOR" -le 14 ]; then
+        if [ "$MINOR" -ge 10 ] && [ "$MINOR" -le 13 ]; then
             PYTHON="python3"
         fi
     fi
