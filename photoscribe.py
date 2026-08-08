@@ -496,6 +496,10 @@ class OllamaWorker(QThread):
         self.gps_lookup = gps_lookup
         self.has_manual_location = has_manual_location
         self._logged_no_location = False
+        self.generate_title = generate_title
+        self.generate_caption = generate_caption
+        self.generate_keywords = generate_keywords
+        self.generate_persons = generate_persons
         self._cancelled = False
         self.batch_total_time = 0.0
         self.batch_processed = 0
@@ -557,10 +561,24 @@ class OllamaWorker(QThread):
     def _build_prompt(self, face_tags=None, photo=None):
         """Construct the full prompt with context (per-photo, so it can weave in
         any person names already tagged on that specific image), using skill files."""
-        parts = [self.prompt.strip()]
+        
+        # Dynamically build the core instruction based on what to generate
+        gen_parts = []
+        if self.generate_title:
+            gen_parts.append("a concise, descriptive title (5-10 words)")
+        if self.generate_caption:
+            gen_parts.append("a detailed description of the scene (1-3 sentences)")
+        if self.generate_keywords:
+            gen_parts.append("10-20 relevant keywords for search and cataloguing, including any people present")
+
+        if not gen_parts:
+            return "Analyse this photograph."
+        
+        instruction = f"Analyse this photograph and generate {', '.join(gen_parts)}."
+        parts = [self.prompt.strip().replace("Analyse this photograph and generate metadata for it.", instruction)]
 
         # Batch context
-        ctx = self.context.strip()
+        ctx = self.context.strip() if 'context' in self.prompt_skills else ""
         if ctx and 'context' in self.prompt_skills:
             parts.append(self.prompt_skills['context'].format(context=ctx))
 
@@ -817,22 +835,29 @@ class OllamaWorker(QThread):
         return fallback
 
     # JSON schema for structured output (LM Studio / OpenAI json_schema mode).
-    # Grammar-constrains decoding so the model can only emit this shape — this
-    # is what stops smaller models "thinking out loud" in prose instead of
-    # returning JSON. The tolerant parser stays as a secondary safety net.
-    _JSON_SCHEMA = {
-        "name": "photo_metadata",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "caption": {"type": "string"},
-                "keywords": {"type": "array", "items": {"type": "string"}},
+    def _get_json_schema(self):
+        """Dynamically generate the JSON schema based on what needs to be generated."""
+        properties = {}
+        required = []
+        if self.generate_title:
+            properties["title"] = {"type": "string"}
+            required.append("title")
+        if self.generate_caption:
+            properties["caption"] = {"type": "string"}
+            required.append("caption")
+        if self.generate_keywords:
+            properties["keywords"] = {"type": "array", "items": {"type": "string"}}
+            required.append("keywords")
+
+        return {
+            "name": "photo_metadata",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
             },
-            "required": ["title", "caption", "keywords"],
-        },
-    }
+        }
 
     def _call_ollama(self, img_b64, full_prompt):
         """Ollama /api/chat format."""
@@ -856,7 +881,7 @@ class OllamaWorker(QThread):
             "stream": False,
             # Constrain output to our schema (Ollama structured outputs). Stops
             # the model returning a prose/bulleted plan instead of JSON.
-            "format": self._JSON_SCHEMA["schema"],
+            "format": self._get_json_schema()["schema"],
             "options": {
                 "temperature": 0.3,
                 "num_predict": self.max_tokens,
@@ -913,8 +938,7 @@ class OllamaWorker(QThread):
             # this schema, so it can't return a prose/bulleted plan. (LM Studio
             # wants json_schema, not the OpenAI json_object type.)
             "response_format": {
-                "type": "json_schema",
-                "json_schema": self._JSON_SCHEMA,
+                "type": "json_schema", "json_schema": self._get_json_schema(),
             },
         }
         url = f"{self.ollama_url}/v1/chat/completions"
@@ -2446,6 +2470,25 @@ class PhotoScribe(QMainWindow):
             "Honours your backup/append/skip options below."
         )
         checks_grid.addWidget(self.auto_write_check, 5, 0)
+        
+        # Generation options
+        gen_options_layout = QHBoxLayout()
+        gen_options_layout.setSpacing(12)
+        gen_options_layout.addWidget(QLabel("Generate:"))
+        
+        self.generate_title_check = QCheckBox("Title")
+        self.generate_title_check.setChecked(True)
+        gen_options_layout.addWidget(self.generate_title_check)
+        
+        self.generate_caption_check = QCheckBox("Caption")
+        self.generate_caption_check.setChecked(True)
+        gen_options_layout.addWidget(self.generate_caption_check)
+        
+        self.generate_keywords_check = QCheckBox("Keywords")
+        self.generate_keywords_check.setChecked(True)
+        gen_options_layout.addWidget(self.generate_keywords_check)
+        gen_options_layout.addStretch()
+        checks_grid.addLayout(gen_options_layout, 5, 1)
         options_layout.addLayout(checks_grid)
 
         sidecar_naming_row = QHBoxLayout()
@@ -2931,6 +2974,16 @@ class PhotoScribe(QMainWindow):
         self.exif_date_fallback_check.setChecked(exif_date_fallback == "true")
         self._load_folder_presets()
 
+        generate_title = self.settings.value("generate_title", "true")
+        self.generate_title_check.setChecked(generate_title == "true")
+        generate_caption = self.settings.value("generate_caption", "true")
+        self.generate_caption_check.setChecked(generate_caption == "true")
+        generate_keywords = self.settings.value("generate_keywords", "true")
+        self.generate_keywords_check.setChecked(generate_keywords == "true")
+
+
+
+
     def _save_settings(self):
         # Persist settings
         
@@ -2994,6 +3047,20 @@ class PhotoScribe(QMainWindow):
         # save current theme
         self.settings.setValue("theme", self.current_theme)
         self._save_folder_presets()
+        self.settings.setValue(
+            "generate_title",
+            "true" if self.generate_title_check.isChecked() else "false"
+        )
+        self.settings.setValue(
+            "generate_caption",
+            "true" if self.generate_caption_check.isChecked() else "false"
+        )
+        self.settings.setValue(
+            "generate_keywords",
+            "true" if self.generate_keywords_check.isChecked() else "false"
+        )
+
+
 
     def closeEvent(self, event):
         self._save_settings()
@@ -3656,8 +3723,10 @@ class PhotoScribe(QMainWindow):
             skip_existing=self.skip_existing_check.isChecked(),
             gps_lookup=self.gps_lookup_check.isChecked(),
             prompt_skills=self._prompt_skills,
-            has_manual_location=bool(
-                self.context_fields["ctx_location"].text().strip()),
+            has_manual_location=bool(self.context_fields["ctx_location"].text().strip()),
+            generate_title=self.generate_title_check.isChecked(),
+            generate_caption=self.generate_caption_check.isChecked(),
+            generate_keywords=self.generate_keywords_check.isChecked(),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.result.connect(self._on_result)

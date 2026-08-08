@@ -193,6 +193,28 @@ class TestStructuredOutput:
         assert rf["type"] == "json_schema"
         assert rf["json_schema"]["schema"]["required"] == ["title", "caption", "keywords"]
 
+    def test_openai_requests_partial_schema(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(photoscribe.requests, "post",
+                            lambda url, json=None, timeout=None: (seen.append(json), _Resp())[1])
+        worker = self._worker("openai")
+        worker.generate_caption = False
+        worker._call_openai("imgb64", "prompt")
+        rf = seen[0].get("response_format")
+        assert rf["json_schema"]["schema"]["required"] == ["title", "keywords"]
+        assert "caption" not in rf["json_schema"]["schema"]["properties"]
+
+    def test_ollama_requests_partial_schema(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(photoscribe.requests, "post",
+                            lambda url, json=None, timeout=None: (seen.append(json), _Resp())[1])
+        worker = self._worker("ollama")
+        worker.generate_title = False
+        worker.generate_keywords = False
+        worker._call_ollama("imgb64", "prompt")
+        fmt = seen[0].get("format")
+        assert fmt["required"] == ["caption"]
+
     def test_openai_falls_back_when_unsupported(self, monkeypatch):
         seen = []
 
@@ -424,6 +446,28 @@ class TestBuildPrompt:
         assert "Comillas, Cantabria, Spain" in prompt
         assert "ground truth" in prompt.lower()
         assert "never name a different" in prompt.lower()
+
+    def test_prompt_instruction_changes_with_options(self, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        w = make_worker(generate_title=True, generate_caption=False, generate_keywords=True)
+        photo = PhotoItem(filepath="x.jpg", filename="x.jpg")
+        prompt = w._build_prompt(photo)
+        assert "generate a concise, descriptive title" in prompt
+        assert "10-20 relevant keywords" in prompt
+        assert "detailed description" not in prompt
+
+        w.generate_title = False
+        w.generate_caption = True
+        prompt = w._build_prompt(photo)
+        assert "generate a detailed description" in prompt
+        assert "title" not in prompt
+
+    def test_prompt_instruction_changes_with_no_options(self, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        w = make_worker(generate_title=False, generate_caption=False, generate_keywords=False)
+        photo = PhotoItem(filepath="x.jpg", filename="x.jpg")
+        prompt = w._build_prompt(photo)
+        assert "generate" not in prompt
 
     def test_no_ground_truth_line_without_context(self, monkeypatch):
         monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
