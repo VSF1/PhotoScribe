@@ -2,6 +2,11 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.6.3.1] — 2026-08-18
+
+### Fixed
+- **Application stability.** Fixed a startup crash (`TypeError`) caused by new, unhandled parameters being passed when initializing the AI worker thread. A subsequent `SyntaxError` from an incomplete fix was also resolved.
+
 ## [1.6.3] — 2026-07-19
 
 ### Fixed

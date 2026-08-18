@@ -61,7 +61,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.6.3"
+APP_VERSION = "1.6.3.1"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -498,10 +498,12 @@ class OllamaWorker(QThread):
     _MAX_TAG_HINTS = 12
 
     def __init__(self, photos, model, prompt, context, ollama_url,
-                 keywords_list=None, backend="ollama", max_tokens=2048,
-                 describe_people=True, skip_existing=False,
-                 gps_lookup=False, has_manual_location=False,
-                 exif_date=False, has_manual_date=False,):
+                 api_key=None, keywords_list=None, backend="ollama",
+                 max_tokens=2048, describe_people=True, use_face_tags=True,
+                 timeout=180, image_size=1024, skip_existing=False,
+                 prompt_skills=None, gps_lookup=False,
+                 has_manual_location=False, exif_date=False,
+                 has_manual_date=False) :
         super().__init__()
         self.photos = photos
         self.model = model
