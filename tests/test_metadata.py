@@ -824,6 +824,82 @@ class TestPerPhotoLocation:
         assert "Comillas, Spain" in pb and "Gerroa" not in pb
 
 
+# ── Per-photo capture date (v1.6.3) ───────────────────────────────
+
+class TestPerPhotoDate:
+    """The capture date used to be read from the first photo and applied to
+    the whole batch, so a folder spanning a day labelled every frame with the
+    first one's timestamp. Reported by a viewer on YouTube."""
+
+    def test_date_injected_per_photo(self, qapp, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        monkeypatch.setattr(photoscribe, "resolve_photo_date",
+                            lambda fp: "24 October 2015, 5:57 pm")
+        w = make_worker(describe_people=False, exif_date=True)
+        prompt = w._build_prompt(PhotoItem(filepath="x.cr2", filename="x.cr2"))
+        assert "24 October 2015, 5:57 pm" in prompt
+        assert "sunrise or sunset" in prompt
+
+    def test_different_photos_get_different_dates(self, qapp, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        dates = {"a.cr2": "1 January 2015, 6:02 am",
+                 "b.cr2": "1 January 2015, 8:14 pm"}
+        monkeypatch.setattr(photoscribe, "resolve_photo_date", lambda fp: dates[fp])
+        w = make_worker(describe_people=False, exif_date=True)
+        pa = w._build_prompt(PhotoItem(filepath="a.cr2", filename="a.cr2"))
+        pb = w._build_prompt(PhotoItem(filepath="b.cr2", filename="b.cr2"))
+        assert "6:02 am" in pa and "8:14 pm" not in pa
+        assert "8:14 pm" in pb and "6:02 am" not in pb
+
+    def test_no_date_when_disabled(self, qapp, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        called = []
+        monkeypatch.setattr(photoscribe, "resolve_photo_date",
+                            lambda fp: called.append(fp) or "1 January 2015")
+        w = make_worker(describe_people=False, exif_date=False)
+        prompt = w._build_prompt(PhotoItem(filepath="x.cr2", filename="x.cr2"))
+        assert "1 January 2015" not in prompt
+        assert called == []
+
+    def test_manual_date_overrides(self, qapp, monkeypatch):
+        monkeypatch.setattr(MetadataWriter, "read_persons", lambda f: [])
+        monkeypatch.setattr(MetadataWriter, "read_keywords", lambda f: [])
+        monkeypatch.setattr(photoscribe, "resolve_photo_date",
+                            lambda fp: "24 October 2015")
+        w = make_worker(describe_people=False, exif_date=True,
+                        context="Date/Time: Spring 2019", has_manual_date=True)
+        prompt = w._build_prompt(PhotoItem(filepath="x.cr2", filename="x.cr2"))
+        assert "Spring 2019" in prompt
+        assert "24 October 2015" not in prompt
+
+
+@needs_exiftool
+class TestExifDateWithTime:
+    def test_time_included_when_requested(self, tmp_path):
+        img = make_jpeg(tmp_path / "t.jpg")
+        exiftool = MetadataWriter.find_exiftool()
+        photoscribe._run([exiftool, "-overwrite_original",
+                          "-DateTimeOriginal=2015:10:24 17:57:43", str(img)],
+                         capture_output=True, text=True)
+        assert photoscribe.read_exif_date(str(img)) == "24 October 2015"
+        with_time = photoscribe.read_exif_date(str(img), with_time=True)
+        assert with_time.startswith("24 October 2015")
+        assert "5:57" in with_time and "pm" in with_time
+
+    def test_date_read_from_sidecar(self, tmp_path):
+        raw = tmp_path / "s.cr2"
+        raw.write_bytes(b"\x00" * 32)
+        sidecar = tmp_path / "s.xmp"
+        exiftool = MetadataWriter.find_exiftool()
+        photoscribe._run([exiftool, "-overwrite_original",
+                          "-XMP:DateTimeOriginal=2015:10:24 06:02:00", str(sidecar)],
+                         capture_output=True, text=True)
+        assert photoscribe.read_exif_date(str(raw)) == "24 October 2015"
+
+
 # ── Geocoder place-name priority + caching ────────────────────────
 
 class TestReverseGeocode:
@@ -877,18 +953,20 @@ class TestLoadTimeAutofill:
 
     def _window(self, monkeypatch):
         monkeypatch.setattr(photoscribe, "read_exif_date",
-                            lambda fp: "24 October 2015")
+                            lambda fp, with_time=False: "24 October 2015")
         w = photoscribe.PhotoScribe()
         w.context_fields["ctx_location"].setText("")
         w.context_fields["ctx_datetime"].setText("")
         return w
 
-    def test_exif_date_runs_with_folder_context_off(self, qapp, monkeypatch):
+    def test_date_not_pinned_at_load(self, qapp, monkeypatch):
+        # v1.6.3: the first photo's date used to be written into the shared
+        # Date/Time field and then applied to every photo in the batch.
         w = self._window(monkeypatch)
         w.folder_context_check.setChecked(False)
         w.exif_date_fallback_check.setChecked(True)
         w._detect_and_apply_folder_context(["/fake/DSCF1234.RAF"])
-        assert w.context_fields["ctx_datetime"].text() == "24 October 2015"
+        assert w.context_fields["ctx_datetime"].text() == ""
 
     def test_location_not_pinned_at_load(self, qapp, monkeypatch):
         # Would previously pin the whole batch to the first geotagged file.
@@ -900,6 +978,29 @@ class TestLoadTimeAutofill:
         w.gps_lookup_check.blockSignals(False)
         w._detect_and_apply_folder_context(["/fake/DSCF1234.RAF"])
         assert w.context_fields["ctx_location"].text() == ""
+
+    def test_clear_all_clears_autofilled_context(self, qapp, monkeypatch):
+        # v1.6.3: auto-detected context survived "Clear All" and carried over
+        # into the next folder loaded.
+        w = self._window(monkeypatch)
+        w.folder_context_check.setChecked(True)
+        w._apply_folder_context(photoscribe.FolderContext(
+            date_str="24 October 2015", location="Berry",
+            raw_folder="2015-10-24 Berry", subfolder=""))
+        assert w.context_fields["ctx_location"].text() == "Berry"
+        w._clear_all()
+        assert w.context_fields["ctx_location"].text() == ""
+        assert w.context_fields["ctx_datetime"].text() == ""
+
+    def test_clear_all_keeps_typed_context(self, qapp, monkeypatch):
+        # What the user typed is theirs — clearing the photo list must not
+        # throw away an Event or Photographer they set for the session.
+        w = self._window(monkeypatch)
+        w.context_fields["ctx_event"].setText("Berry Show 2026")
+        w.context_fields["ctx_location"].setText("Kiama")
+        w._clear_all()
+        assert w.context_fields["ctx_event"].text() == "Berry Show 2026"
+        assert w.context_fields["ctx_location"].text() == "Kiama"
 
     def test_gps_lookup_setting_persists(self, qapp, monkeypatch, tmp_path):
         # v1.5.6: the ticked box used to reset on every launch, because it was

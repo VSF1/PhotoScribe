@@ -60,7 +60,7 @@ def _popen(*args, **kwargs):
 
 
 # Single source of truth for the app version (the build reads this too).
-APP_VERSION = "1.6.2"
+APP_VERSION = "1.6.3"
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QTextEdit, QLineEdit, QComboBox,
@@ -214,31 +214,50 @@ def deduplicate_keywords(keywords: list) -> list:
 # EXIF date reading
 # ─────────────────────────────────────────────────────────
 
-def read_exif_date(filepath: str) -> Optional[str]:
-    """Read DateTimeOriginal from EXIF and return as human-readable string."""
+def read_exif_date(filepath: str, with_time: bool = False) -> Optional[str]:
+    """Read DateTimeOriginal and return it as a human-readable string.
+
+    Checks the file and any co-located .xmp sidecar, for the same reason the
+    GPS read does. With `with_time`, the clock time is kept as well — that is
+    what tells a model whether it is looking at sunrise or sunset, which it
+    often cannot settle from the image alone.
+    """
     exiftool = MetadataWriter.find_exiftool()
     if not exiftool:
         return None
-    try:
-        result = _run(
-            [exiftool, "-j", "-DateTimeOriginal", filepath],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode == 0:
+    targets = [str(filepath)] + MetadataWriter._sidecar_paths(filepath)
+    for tgt in targets:
+        try:
+            result = _run(
+                [exiftool, "-j", "-DateTimeOriginal", tgt],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                continue
             data = json.loads(result.stdout)
-            if data:
-                dto = data[0].get("DateTimeOriginal", "")
-                if dto and ":" in dto:
-                    date_part = dto.split(" ")[0]
-                    parts = date_part.split(":")
-                    if len(parts) == 3:
-                        dt = _datetime(int(parts[0]), int(parts[1]), int(parts[2]))
-                        if sys.platform == "win32":
-                            return dt.strftime("%#d %B %Y")
-                        else:
-                            return dt.strftime("%-d %B %Y")
-    except Exception:
-        pass
+            if not data:
+                continue
+            dto = data[0].get("DateTimeOriginal", "")
+            if not dto or ":" not in dto:
+                continue
+            chunks = str(dto).split(" ")
+            parts = chunks[0].split(":")
+            if len(parts) != 3:
+                continue
+            hh = mm = 0
+            if with_time and len(chunks) > 1:
+                clock = chunks[1].split(":")
+                if len(clock) >= 2 and clock[0].isdigit() and clock[1].isdigit():
+                    hh, mm = int(clock[0]), int(clock[1])
+            dt = _datetime(int(parts[0]), int(parts[1]), int(parts[2]), hh, mm)
+            day_fmt = "%#d" if sys.platform == "win32" else "%-d"
+            out = dt.strftime(f"{day_fmt} %B %Y")
+            if with_time and (hh or mm):
+                hour_fmt = "%#I" if sys.platform == "win32" else "%-I"
+                out += dt.strftime(f", {hour_fmt}:%M %p").replace("AM", "am").replace("PM", "pm")
+            return out
+        except Exception:
+            continue
     return None
 
 # ─────────────────────────────────────────────────────────
@@ -422,6 +441,16 @@ def resolve_photo_location(filepath: str) -> Optional[str]:
         return reverse_geocode(coords[0], coords[1])
     return None
 
+
+def resolve_photo_date(filepath: str) -> Optional[str]:
+    """When this one photo was taken, or None.
+
+    Resolved per photo for the same reason the location is: sampling the first
+    file and pinning its date to the whole batch labels a sunset shot with the
+    morning's date the moment a folder spans more than one moment.
+    """
+    return read_exif_date(filepath, with_time=True)
+
 # ─────────────────────────────────────────────────────────
 # Data structures
 # ─────────────────────────────────────────────────────────
@@ -468,7 +497,8 @@ class OllamaWorker(QThread):
     def __init__(self, photos, model, prompt, context, ollama_url,
                  keywords_list=None, backend="ollama", max_tokens=2048,
                  describe_people=True, skip_existing=False,
-                 gps_lookup=False, has_manual_location=False):
+                 gps_lookup=False, has_manual_location=False,
+                 exif_date=False, has_manual_date=False):
         super().__init__()
         self.photos = photos
         self.model = model
@@ -486,6 +516,11 @@ class OllamaWorker(QThread):
         # A location typed into the context fields overrides all of that.
         self.gps_lookup = gps_lookup
         self.has_manual_location = has_manual_location
+        # The capture date is resolved per photo for the same reason, so a
+        # folder spanning a whole day doesn't get the first frame's timestamp
+        # stamped on every shot in it.
+        self.exif_date = exif_date
+        self.has_manual_date = has_manual_date
         self._logged_no_location = False
         self._cancelled = False
         self.batch_total_time = 0.0
@@ -581,7 +616,19 @@ class OllamaWorker(QThread):
                     "Location lookup: no GPS or place name found on "
                     f"{photo.filename} (further misses won't be logged)")
 
-        if ctx or photo_location:
+        # Per-photo capture date, on the same terms as the location.
+        photo_date = ""
+        if photo and self.exif_date and not self.has_manual_date:
+            photo_date = resolve_photo_date(photo.filepath) or ""
+            if photo_date:
+                parts.append(
+                    f"This photo was taken on {photo_date}. Use the time of day "
+                    "to judge the light — whether this is sunrise or sunset, "
+                    "morning or evening — rather than guessing from the image "
+                    "alone. Do not put the date itself in the title or caption."
+                )
+
+        if ctx or photo_location or photo_date:
             parts.append(
                 "This context is factual ground truth about the photo. In "
                 "particular, if a Location is given, the photo was taken there "
@@ -2290,6 +2337,9 @@ class PhotoScribe(QMainWindow):
         self.worker: Optional[OllamaWorker] = None
         self.settings = QSettings("PhotoScribe", "PhotoScribe")
         self._detected_folder_context: Optional[FolderContext] = None
+        # Context fields we filled in ourselves, so Clear All can undo them
+        # without also wiping anything the user typed.
+        self._autofilled_fields: set = set()
         self._preview_cache = {}
 
         self._init_ui()
@@ -3301,6 +3351,9 @@ class PhotoScribe(QMainWindow):
                 pass
         self.photos.clear()
         self.folder_name_label.setText("")
+        # Drop anything we auto-detected for the folder just cleared, so the
+        # next batch starts clean instead of inheriting the last one's context.
+        self._clear_folder_context()
         self._current_result_index = -1
         self._refresh_photo_table()
         self._refresh_results_table()
@@ -3472,10 +3525,15 @@ class PhotoScribe(QMainWindow):
             self._clear_folder_context()
 
     def _clear_folder_context(self):
-        """Clear detected folder context and hide indicator."""
+        """Clear detected folder context, and the fields it filled in."""
         self._detected_folder_context = None
         self.folder_context_label.setText("")
         self.clear_folder_ctx_btn.setVisible(False)
+        # Only clear what we auto-filled — anything typed by hand is the
+        # user's, and survives.
+        for key in self._autofilled_fields:
+            self.context_fields[key].clear()
+        self._autofilled_fields.clear()
 
     def _apply_folder_context(self, ctx: FolderContext):
         """Fill Location and Date/Time fields from detected context (only if empty)."""
@@ -3488,8 +3546,10 @@ class PhotoScribe(QMainWindow):
         # Fill fields only if they are currently empty
         if not self.context_fields["ctx_location"].text().strip():
             self.context_fields["ctx_location"].setText(ctx.location)
+            self._autofilled_fields.add("ctx_location")
         if not self.context_fields["ctx_datetime"].text().strip():
             self.context_fields["ctx_datetime"].setText(ctx.date_str)
+            self._autofilled_fields.add("ctx_datetime")
         self.log(f"Folder context detected: {ctx.location}, {ctx.date_str} (from '{ctx.raw_folder}')")
 
     def _detect_and_apply_folder_context(self, filepaths: list):
@@ -3505,24 +3565,13 @@ class PhotoScribe(QMainWindow):
                 self._apply_folder_context(ctx)
                 self._apply_folder_presets(ctx.raw_folder)
 
-        # EXIF date fallback
-        if self.exif_date_fallback_check.isChecked():
-            datetime_field = self.context_fields["ctx_datetime"]
-            if not datetime_field.text():
-                for fp in filepaths[:3]:
-                    exif_date = read_exif_date(fp)
-                    if exif_date:
-                        datetime_field.setText(exif_date)
-                        self.log(f"EXIF date fallback: {exif_date}")
-                        break
-
-        # NOTE: the location is deliberately NOT auto-filled into the shared
-        # Location field here. It is resolved per photo at generation time
-        # (see OllamaWorker._build_prompt), so that enabling the option after
-        # loading takes effect, Regenerate picks it up, and a folder spanning
-        # several places tags each photo with its own location rather than
-        # pinning the whole batch to whichever file happened to be scanned.
-        # Anything typed into the Location field still overrides everything.
+        # NOTE: neither the location nor the capture date is auto-filled into
+        # the shared context fields here. Both are resolved per photo at
+        # generation time (see OllamaWorker._build_prompt), so that enabling
+        # either option after loading takes effect, Regenerate picks it up, and
+        # a folder spanning several places or several hours tags each photo
+        # with its own rather than pinning the batch to whichever file happened
+        # to be scanned first. Anything typed into those fields still overrides.
 
     # ── Folder presets ──
 
@@ -3755,6 +3804,9 @@ class PhotoScribe(QMainWindow):
             gps_lookup=self.gps_lookup_check.isChecked(),
             has_manual_location=bool(
                 self.context_fields["ctx_location"].text().strip()),
+            exif_date=self.exif_date_fallback_check.isChecked(),
+            has_manual_date=bool(
+                self.context_fields["ctx_datetime"].text().strip()),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.result.connect(self._on_result)

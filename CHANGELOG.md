@@ -2,6 +2,14 @@
 
 All notable changes to PhotoScribe are recorded here. Dates are ISO (YYYY-MM-DD).
 
+## [1.6.3] — 2026-07-19
+
+### Fixed
+- **Each photo now uses its own capture date, not the first photo's.** Loading two or more photos put the first one's date into the Date/Time field and applied it to every photo in the batch, so a folder spanning a morning and an evening had every frame labelled with the morning. The date is now read per photo when its metadata is generated, in the same way the location has been since 1.5.6. Anything typed into the Date/Time field still overrides it for the whole batch. Reported by a viewer on YouTube.
+- **The time of day is now included and used.** Only the date was passed to the model before. The capture time is what settles whether a photo is sunrise or sunset, which is difficult to judge from the image alone, so it is now supplied along with the date and the model is told to use it for the light rather than to name the date in the caption.
+- **Auto-detected context no longer survives "Clear All".** Anything PhotoScribe filled in for you is cleared along with the photos, so the next folder starts clean instead of inheriting the last one's date and location. Values you typed yourself are kept.
+- **The capture date is read from XMP sidecars too**, not just the file, matching how GPS and location have worked since 1.5.4.
+
 ## [1.6.2] — 2026-07-19
 
 ### Added
